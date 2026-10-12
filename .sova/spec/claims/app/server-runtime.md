@@ -26,7 +26,11 @@ takes effect at the server's next start.
   `SOVA_RUNTIME=node` or through `pnpm run test:node`. The runner's own `--runtime node|bun`
   wins over the environment; `pnpm run test:bun` runs Bun whatever the environment says.
 - The Bun binary is `$SOVA_BUN` when set, else `bun` on `PATH`, else what `mise which bun`
-  answers. The Node binary the launcher uses is `$SOVA_NODE`, else `node` on `PATH`.
+  answers. A `bun` on `PATH` that is a mise dispatch shim is resolved through mise to its actual
+  executable before launch, so an isolated child's changed `HOME` never asks the shim to discover
+  configuration or trust again. An unresolved shim is not a usable Bun binary; non-shim `PATH`
+  entries and the explicit `$SOVA_BUN` choice keep their priority, and there is no fallback to Node.
+  The Node binary the launcher uses is `$SOVA_NODE`, else `node` on `PATH`.
 
 ## §app.server-runtime/fallback — No fallback to Node
 

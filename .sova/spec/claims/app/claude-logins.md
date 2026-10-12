@@ -541,6 +541,12 @@ used, and the sign-in data keeps only numbers. Sova never writes the item. A fil
 unreadable, decides alone, as before. No other platform ever runs `security`: elsewhere everything
 is as before, byte for byte.
 
+**Tests never reach the system keychain.** In hermetic test processes, both unit and integration,
+the default credential and attribute executors return no credentials or item time without
+starting `security`, regardless of `HOME`. Keychain behavior is exercised only with explicitly
+injected fixture executors. Outside test processes the platform, home and secure-storage gates
+are unchanged.
+
 When this host is macOS and `default`'s login can be read neither from the file nor from the
 keychain, `GET /api/insights/usage` and `GET /api/claude/accounts` carry `claudeOwnLoginUnreadable:
 true` (absent otherwise), and the Usage page (under its lead line) and Settings → Accounts (under

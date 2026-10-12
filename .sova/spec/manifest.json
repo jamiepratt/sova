@@ -1127,6 +1127,8 @@
       "authority": "accepted",
       "evidence": "verified",
       "code": [
+        "server/harness/pi/native-compaction-extension.ts",
+        "server/harness/pi/native-compaction-extension.test.ts",
         "server/memory/engine.ts",
         "server/harness/pi/memory.ts",
         "pi-config/extensions/claude-code/provider/memory-view.ts",
@@ -1186,6 +1188,8 @@
       "authority": "accepted",
       "evidence": "verified",
       "code": [
+        "server/harness/pi/native-compaction-extension.ts",
+        "server/harness/pi/native-compaction-extension.test.ts",
         "server/memory/engine.ts",
         "server/harness/pi/memory.ts",
         "server/memory/chat-memory.test.ts"
@@ -1349,6 +1353,80 @@
       "code": [
         "src/components/ComposerMenu.tsx",
         "src/components/ModelMenu.tsx"
+      ]
+    },
+    "§chat.native-compaction/accounting": {
+      "kind": "behavior",
+      "authority": "accepted",
+      "evidence": "verified",
+      "requires": [
+        "§app.insights/usage-ledger",
+        "§app.insights/llm-inflight",
+        "§app.provider-limits/in-flight",
+        "§app.settings-dialog/models"
+      ],
+      "code": [
+        "server/harness/pi/native-compaction-accounting.ts",
+        "server/harness/pi/native-compaction-accounting.test.ts",
+        "server/harness/pi/native-compaction-admission.test.ts"
+      ]
+    },
+    "§chat.native-compaction/checkpoint": {
+      "kind": "behavior",
+      "authority": "accepted",
+      "evidence": "verified",
+      "requires": [
+        "§app.harness/session-history",
+        "§app.harness/new-work",
+        "§chat.memory/turn",
+        "§chat.memory/zoomable"
+      ],
+      "code": [
+        "server/chat-manager.ts",
+        "server/harness/pi/host.ts",
+        "server/harness/pi/native-compaction-extension.ts",
+        "server/harness/pi/native-compaction-extension.test.ts",
+        "server/harness/pi/quirks.ts",
+        "server/harness/pi/QUIRKS.md",
+        "server/harness/pi/contract.test.ts",
+        "server/harness/pi/native-compaction-append-race.integration.test.ts"
+      ]
+    },
+    "§chat.native-compaction/replay": {
+      "kind": "behavior",
+      "authority": "accepted",
+      "evidence": "verified",
+      "requires": [
+        "§app.harness/session",
+        "§app.harness/boundary"
+      ],
+      "code": [
+        "server/harness/pi/native-compaction-call.ts",
+        "server/harness/pi/native-compaction-call.test.ts",
+        "server/harness/pi/native-compaction-state.ts",
+        "server/harness/pi/native-compaction-state.test.ts",
+        "server/harness/pi/native-compaction-events.ts",
+        "server/harness/pi/native-compaction-events.test.ts",
+        "server/harness/pi/native-compaction-canary.test.ts",
+        "server/harness/pi/native-compaction-extension.ts",
+        "server/harness/pi/native-compaction-extension.test.ts"
+      ]
+    },
+    "§chat.native-compaction/transports": {
+      "kind": "behavior",
+      "authority": "accepted",
+      "evidence": "verified",
+      "requires": [
+        "§app.harness/session",
+        "§app.harness/session-open",
+        "§app.harness/session-history"
+      ],
+      "code": [
+        "server/harness/pi/native-compaction-transport.integration.test.ts",
+        "server/harness/pi/native-compaction-lifecycle.integration.test.ts",
+        "server/harness/pi/native-compaction-hosted.integration.test.ts",
+        "server/harness/pi/native-compaction-writer.integration.test.ts",
+        "server/harness/pi/native-compaction-append-race.integration.test.ts"
       ]
     },
     "§chat.slash-commands/announcements": {
@@ -1746,6 +1824,16 @@
         "src/components/ModelMenu.tsx",
         "src/components/ComposerMenu.tsx",
         "src/components/SessionView.tsx"
+      ]
+    },
+    "§chat/native-compaction": {
+      "kind": "surface",
+      "authority": "accepted",
+      "evidence": "verified",
+      "code": [
+        "server/chat-manager.ts",
+        "server/harness/pi/native-compaction-extension.ts",
+        "server/harness/pi/native-compaction-extension.test.ts"
       ]
     },
     "§chat/slash-commands": {
@@ -2899,7 +2987,9 @@
         "server/sync/extensions.ts",
         "server/sync/index.ts",
         "server/sync/docs.test.ts",
+        "server/sync/docs.integration.test.ts",
         "server/sync/extensions.test.ts",
+        "server/sync/extensions.integration.test.ts",
         "server/sync/index.test.ts",
         "server/sync/docs-grants.test.ts"
       ]
@@ -16083,6 +16173,7 @@
         "scripts/test-changed.d.mts",
         "server/tier-guard.test.ts",
         "server/run-tests-changed.test.ts",
+        "server/playbook-tools.test.ts",
         "server/harness-boundary.test.ts",
         "package.json",
         "CLAUDE.md"

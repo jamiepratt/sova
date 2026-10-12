@@ -1,0 +1,21 @@
+# §chat/native-compaction — Native subscription compaction
+
+Ordinary Sova-hosted ChatGPT/Codex subscription chats may compact their old context into an opaque backend checkpoint alongside a real portable textual summary. This feature is Sova-owned inside the pi adapter, not a pi-config extension or another scheduler. It does not run in terminal sessions, workers or special hosted loadouts. An enabled process policy is required; no live installation is activated by verification of this draft.
+
+## §chat.native-compaction/checkpoint — One canonical prefix, one ordinary checkpoint
+
+Pi's existing manual, threshold and overflow compaction path selects the recent-history boundary. The native feature uses the canonical active projection and source-entry identity to select only the old prefix, including the prefix of a split turn and the previous checkpoint's projected representation; context-edited omissions and abandoned history never re-enter it. Pi's selected recent tail stays unchanged. A real portable summary of that same prefix is generated with Pi's public helper and the configured registry, honoring custom instructions and cancellation. Native failure retains valid text; an abort cancels without a new costly fallback call. Versioned native metadata is returned only as details of Pi's normal compaction entry, with file-operation metadata preserved where available, never as a pre-commit cache, sidecar or placeholder summary.
+
+Both memory types disable all feature-owned portable and native calls and replay, even when their view is unavailable. UniiChat still cancels compaction and zoomable compaction keeps its existing textual fallback. Leaf, model, account, memory and hosted ownership are revalidated after asynchronous work; invalidation explicitly cancels rather than falling into ordinary costly compaction.
+
+## §chat.native-compaction/replay — Compatible provenance, never a quote
+
+Only known physical openai-codex / openai-codex-responses models with subscription OAuth and the expected HTTPS ChatGPT backend are eligible; API keys, arbitrary proxies and unresolved virtual routes are not. Credentials are resolved through the configured registry at request time. Only the latest effective checkpoint on the active branch can replay, and a later textual or memory checkpoint is a barrier. Provider, API, model, endpoint and account identity must still match. The genuine compaction summary must be witnessed in the final transformed request context before exact-one whole serialized-slot replacement; a user quoting identical text is not provenance, and ambiguity keeps the portable summary. Neither previous_response_id nor context_management is persisted, and store:true is never requested.
+
+## §chat.native-compaction/accounting — Admission and reported spend
+
+The model policy is checked before both feature-owned calls, and the configured registry's provider-limit admission governs each call. Portable and native requests carry distinct routing IDs and the session's owner, working directory and compaction purpose through the existing usage instrumentation; the feature adds no second ledger writer. Each attempt that reports tokens is counted once, including failed native requests, and missing backend usage is not invented from initialized SDK zeros. Checkpoint details keep per-component reported usage and model identity. A combined checkpoint usage is supplied only when every component reports complete counters for the same model; reasoning is not added a second time to output tokens.
+
+## §chat.native-compaction/transports — Request and lifecycle preservation
+
+The native call uses the built-in subscription provider, the effective system instructions and model-visible tool declarations, and the existing SSE or cached-WebSocket replay path. Prefix replacement preserves kept tail messages and effective declarations, including grammar tools and call namespaces. Native metadata follows ordinary compaction persistence across reopen, rewind and fork; incompatible or later textual checkpoints use the portable summary. Hosted write and refusal guards remain in force. Offline transport and lifecycle tests use synthetic credentials and artifacts only and do not establish backend entitlement, quota, prefix-only protocol support or artifact lifetime; those require separately authorized subscription validation.

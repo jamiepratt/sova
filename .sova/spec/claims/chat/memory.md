@@ -156,6 +156,9 @@ the turn's first request, and is the same for the turn's every request.
   every √(2 · block / g) turns. The view
   message carries the guide with the prefix as one text block and the newer lines as another, and the
   guide tells the model the view may come in two places, read as one list.
+- **Native subscription checkpoints are off.** While UniiChat is on, Sova's native subscription
+  compaction (§chat/native-compaction) issues no portable or native calls and never replays its
+  opaque checkpoints, even while this view is unavailable or preparing.
 - **No compaction.** A UniiChat chat never compacts: pi's own compaction, Claude Code's automatic one
   and `compact-handoff` are cancelled, and a `/compact` from the web is answered "Memory (UniiChat)
   is on: this chat doesn't compact; the model works from its memory."
@@ -185,7 +188,9 @@ a `/compact`, Claude Code's automatic one or `compact-handoff` — the compactio
 by the view of the compacted messages, merged down to the chat's size, under a short explanation of
 the lines and the `zoom` tool; the kept recent part stays as pi chose it. A message not summarized
 when it compacts waits at most 20 seconds, then shows as not summarized yet. Each later compaction
-writes the view of everything it compacts again.
+writes the view of everything it compacts again. While zoomable memory is on, Sova's native
+subscription compaction (§chat/native-compaction) issues no portable or native calls and does not
+replay opaque checkpoints, even when the view is unavailable and pi's own textual summary is used.
 
 ## §chat.memory/status — Status and outline
 

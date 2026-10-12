@@ -209,6 +209,12 @@ extension, and the v1 wire shim's reads of pi's event and entry names (§app.har
 hello's pi version and login sync's pi lock and auth refresh come from the adapter
 (`server/harness/pi/package.ts`).
 
+The ordinary hosted chat may also install Sova's adapter-local native subscription compaction
+(§chat/native-compaction), only when its process policy enables it. Its request hooks are installed
+after extension binding so checkpoint provenance is observed after all context transformations;
+no special loadout gains these hooks. This feature remains behind the same driving session and
+hosted ownership guards.
+
 ## §app.harness/session-open — The adapter opens a chat's runtime and bridges its dialogs
 
 A hosted chat's runtime is opened by the pi adapter (`server/harness/pi/open.ts`): it opens the
@@ -226,6 +232,11 @@ never from pi's session manager. Opening still writes nothing: the model and thi
 makes while building a session are held until the chat's first write, the one that restates the
 file's recorded model is dropped, and the hold lasts until the whole open, a special session's own
 setup included, is over.
+
+Only ordinary hosted chats register the named Sova-owned native compaction factory
+(§chat/native-compaction), idle unless `SOVA_NATIVE_COMPACTION=on` enables this process. It never
+registers in a special loadout, a worker or a terminal session, and requires request-time subscription
+eligibility before issuing its own calls. Both memory types suppress it, including replay.
 
 Extension dialogs reach the chat through a dialog bridge (`DialogBridge`, `shared/harness-session.ts`;
 pi's side is `server/harness/pi/ui-bridge.ts`, which turns pi's UI calls — select, confirm, input,
