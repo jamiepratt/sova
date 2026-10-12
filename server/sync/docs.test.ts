@@ -1,17 +1,48 @@
 // Settings and themes sync between in-process "hosts", each with its own scratch agent dir.
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, rmdirSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ModelFavorites } from "../../pi-config/extensions/command-palette/favorites.ts";
 import { delegateDefaults } from "../../pi-config/extensions/mode/delegate.ts";
 import { specDefaults } from "../../pi-config/extensions/mode/spec.ts";
-import { compareDocs, DocSync, settingsDocs, themeDoc, validFavorites, type DocPeer } from "./docs";
+import { compareDocs, DocSync, settingsDocs, themeDoc, validFavorites, type DocPeer, type DocSyncOptions, type DocWatch } from "./docs";
 
 const root = mkdtempSync(join(tmpdir(), "sova-doc-sync-"));
 after(() => rmSync(root, { recursive: true, force: true }));
 let seq = 0;
+let now = Date.now() + 1000;
+
+/** Explicit delivery and debounce turns; files and parsers remain real. */
+class Delivery {
+  readonly watches: { directory: string; listener: (event: string, filename: string | null) => void; closes: number; close?: () => void }[] = [];
+  readonly jobs: { callback: () => void; active: boolean; delay: number }[] = [];
+  readonly watch: NonNullable<DocSyncOptions["watch"]> = (directory, listener) => {
+    if (!existsSync(directory)) throw new Error("missing directory");
+    const entry = { directory, listener, closes: 0, close: undefined as (() => void) | undefined };
+    this.watches.push(entry);
+    const watcher: DocWatch = {
+      close: () => { entry.closes++; entry.close?.(); },
+      on: (event, callback) => { if (event === "close") entry.close = callback; },
+    };
+    return watcher;
+  };
+  readonly schedule: NonNullable<DocSyncOptions["schedule"]> = (callback, delay) => {
+    const job = { callback, active: true, delay };
+    this.jobs.push(job);
+    return () => { job.active = false; };
+  };
+  event(directory: string, filename: string | null) {
+    for (const w of this.watches) if (w.directory === directory && !w.closes) w.listener("rename", filename);
+  }
+  pending() { return this.jobs.filter((j) => j.active); }
+  fire() {
+    const pending = this.pending();
+    for (const j of pending) { j.active = false; j.callback(); }
+  }
+}
 
 class Host {
   online = true;
@@ -20,6 +51,7 @@ class Host {
   enabled = { settings: true, themes: true };
   readonly agentDir: string;
   readonly stateDir: string;
+  readonly delivery = new Delivery();
   constructor(
     readonly id: string,
     private readonly mesh: Host[],
@@ -39,9 +71,11 @@ class Host {
       sidecarPath: join(this.stateDir, "doc-sync.json"),
       peers: () => this.mesh.filter((h) => h !== this).map((h) => this.peerTo(h)),
       categoryEnabled: (c) => this.enabled[c],
-      now: () => Date.now() + this.offset,
+      now: () => now + this.offset,
       log: () => {},
       debounceMs: 30,
+      watch: this.delivery.watch,
+      schedule: this.delivery.schedule,
     });
   }
   peerTo(t: Host): DocPeer {
@@ -61,6 +95,7 @@ class Host {
     };
   }
   write(rel: string, content: string) {
+    now++;
     const p = join(this.agentDir, rel);
     mkdirSync(join(p, ".."), { recursive: true });
     writeFileSync(p, content);
@@ -77,7 +112,7 @@ function mesh(n: number): Host[] {
   for (let i = 0; i < n; i++) hosts.push(new Host(String.fromCharCode(97 + i), hosts, base));
   return hosts;
 }
-const tick = () => new Promise((r) => setTimeout(r, 3));
+const tick = async () => { now++; };
 async function converge(hosts: Host[]) {
   for (let r = 0; r < 2; r++) for (const h of hosts) if (h.online) await h.sync.syncAll();
 }
@@ -325,22 +360,61 @@ test("a forged document (content not matching its hash, or rejected by its reade
   }
 });
 
-test("a theme deleted inside a themes folder that did not exist at start is still noticed by its watcher", async () => {
+test("late themes folder: explicit parent event attaches one watcher; filtered, coalesced scans read the latest file and deletion", async () => {
   const hosts: Host[] = [];
   const base = join(root, `m${++seq}`);
   const a = new Host("a", hosts, base, false);
   hosts.push(a);
   await a.sync.start();
   try {
-    const until = async (cond: () => boolean) => {
-      const end = Date.now() + 15_000; // a hang guard
-      while (!cond() && Date.now() < end) await new Promise((r) => setTimeout(r, 20));
-      return cond();
-    };
+    const d = a.delivery;
+    const themesDir = join(a.stateDir, "themes");
+    assert.deepEqual(d.watches.map((w) => w.directory), [a.agentDir, a.stateDir], "no watch for the missing folder");
+    d.event(a.agentDir, "auth.json");
+    d.event(a.stateDir, "doc-sync.json");
+    assert.equal(d.pending().length, 0, "unrelated files do not schedule a scan");
     a.write("sova/themes/late.json", theme("Late"));
-    assert.equal(await until(() => a.sync.recordsSnapshot()["themes:late.json"]?.hash !== undefined), true, "creation seen");
-    rmSync(join(a.stateDir, "themes", "late.json"));
-    assert.equal(await until(() => a.sync.recordsSnapshot()["themes:late.json"]?.hash === null), true, "deletion seen without a manual observe");
+    d.event(a.stateDir, "themes");
+    assert.equal(a.sync.recordsSnapshot()["themes:late.json"], undefined, "the event only schedules");
+    assert.equal(d.pending().length, 1);
+    d.fire();
+    const first = a.sync.recordsSnapshot()["themes:late.json"]!;
+    assert.equal(typeof first.hash, "string", "creation scanned");
+    assert.equal(d.watches.filter((w) => w.directory === themesDir).length, 1);
+    d.fire(); // finish the creation's queued peer notification (there are no peers)
+    d.event(themesDir, "temporary.txt");
+    assert.equal(d.pending().length, 0, "theme watch ignores non-json names");
+    a.write("sova/themes/late.json", theme("Intermediate"));
+    d.event(themesDir, "late.json");
+    const discarded = d.pending()[0]!;
+    a.write("sova/themes/late.json", theme("Latest"));
+    d.event(themesDir, null);
+    assert.equal(discarded.active, false, "a second event replaces the pending scan");
+    assert.equal(d.pending().length, 1);
+    assert.equal(d.pending()[0]!.delay, 30);
+    assert.equal(a.sync.recordsSnapshot()["themes:late.json"]!.hash, first.hash, "cached record unchanged before debounce");
+    d.fire();
+    assert.equal(a.sync.recordsSnapshot()["themes:late.json"]!.hash, createHash("sha256").update(theme("Latest")).digest("hex"), "the scan read the latest bytes, not an event-time snapshot");
+    assert.notEqual(a.sync.recordsSnapshot()["themes:late.json"]!.hash, first.hash);
+    assert.equal(a.sync.doc("themes:late.json")!.content, theme("Latest"));
+    assert.equal(d.watches.filter((w) => w.directory === themesDir).length, 1, "scans do not duplicate the theme watcher");
+    rmSync(join(themesDir, "late.json"));
+    d.event(themesDir, "late.json");
+    d.fire();
+    assert.equal(a.sync.recordsSnapshot()["themes:late.json"]!.hash, null, "deletion scanned without a manual observe");
+    a.write("mode.json", modeJson("delegate"));
+    d.event(a.agentDir, "mode.json");
+    assert.equal(d.pending().length, 2, "scan and coalesced sync are both pending");
+    const beforeStop = a.sync.recordsSnapshot();
+    a.sync.stop();
+    a.sync.stop();
+    assert.equal(d.pending().length, 0, "stop cancels both debounce paths");
+    assert.ok(d.watches.every((w) => w.closes === 1), "every watch closes once, including the late theme watch");
+    // A callback delivered after close cannot queue more work.
+    d.watches[0]!.listener("rename", "mode.json");
+    assert.equal(d.pending().length, 0);
+    d.fire();
+    assert.deepEqual(a.sync.recordsSnapshot(), beforeStop, "no scan after teardown");
   } finally {
     a.sync.stop();
   }
@@ -351,22 +425,24 @@ test("a local delete first noticed by a peer's request still reaches every other
   // themes back on at once, so b's pull asks a for the document before a's own watcher scans.
   const [a, b, c] = mesh(3);
   for (const h of [a!, b!, c!]) await h.sync.start();
-  const until = async (cond: () => boolean) => {
-    const end = Date.now() + 15_000; // a hang guard
-    while (!cond() && Date.now() < end) await new Promise((r) => setTimeout(r, 20));
-    return cond();
-  };
   try {
     b!.enabled.themes = false;
     a!.write("sova/themes/toggle.json", theme("Toggle"));
     a!.sync.observe();
     await converge([a!, b!, c!]);
     assert.equal(c!.read("sova/themes/toggle.json"), theme("Toggle"));
+    await tick();
     rmSync(join(a!.stateDir, "themes", "toggle.json"));
     b!.enabled.themes = true;
     // b pulls from a before a's watcher fires: a.doc() folds the delete into a's records.
     await b!.sync.syncWith(b!.peerTo(a!));
-    assert.equal(await until(() => c!.read("sova/themes/toggle.json") === undefined), true, "c lost it without a reconcile");
+    assert.equal(a!.sync.recordsSnapshot()["themes:toggle.json"]!.hash, null, "the request folded the deletion into the cache");
+    assert.equal(c!.read("sova/themes/toggle.json"), theme("Toggle"), "c still has the old document before the queued push");
+    assert.equal(a!.delivery.pending().length, 1, "multiple local changes coalesce into one sync, even when doc() observes first");
+    a!.delivery.fire();
+    // Drain the in-process peer promises, not a wall-clock timer or a manual reconcile.
+    for (let i = 0; i < 10; i++) await Promise.resolve();
+    assert.equal(c!.read("sova/themes/toggle.json"), undefined, "c lost it through the scheduled sync, without a reconcile");
   } finally {
     for (const h of [a!, b!, c!]) h.sync.stop();
   }

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { lstatSync, mkdirSync, readFileSync, readdirSync, rmdirSync, unlinkSync, watch, type FSWatcher } from "node:fs";
+import { lstatSync, mkdirSync, readFileSync, readdirSync, rmdirSync, unlinkSync, watch } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import type { MeshCap } from "../../shared/mesh-access";
 import type { SyncCategory } from "../../shared/protocol";
@@ -241,6 +241,11 @@ function readLocal(spec: DocSpec): Local {
 
 const hashOf = (l: Local): string | null | undefined => (l.kind === "file" ? sha(l.text) : l.kind === "absent" ? null : undefined);
 
+export interface DocWatch {
+  close(): void;
+  on(event: "error" | "close", listener: () => void): unknown;
+}
+
 export interface DocSyncOptions {
   hostId: string;
   agentDir: string;
@@ -257,6 +262,10 @@ export interface DocSyncOptions {
   now?: () => number;
   log?: (m: string) => void;
   debounceMs?: number;
+  /** Defaults to the native nonpersistent directory watcher. */
+  watch?: (directory: string, listener: (event: string, filename: string | null) => void) => DocWatch;
+  /** Schedule a debounce and return its cancellation function; defaults to an unref'd timeout. */
+  schedule?: (callback: () => void, delayMs: number) => () => void;
 }
 
 const SIDECAR_VERSION = 1;
@@ -264,10 +273,10 @@ const SIDECAR_VERSION = 1;
 export class DocSync {
   private records: Record<string, DocMeta> = {};
   private readonly peerState = new Map<string, { state: "ok" | "clock-skew" | "error"; at: number; error?: string }>();
-  private watchers: FSWatcher[] = [];
-  private themesWatcher: FSWatcher | null = null;
-  private debounce: NodeJS.Timeout | undefined;
-  private syncTimer: NodeJS.Timeout | undefined;
+  private watchers: DocWatch[] = [];
+  private themesWatcher: DocWatch | null = null;
+  private debounce: (() => void) | undefined;
+  private syncTimer: (() => void) | undefined;
   private started = false;
   private firstRun = false;
   private loaded = false;
@@ -326,9 +335,10 @@ export class DocSync {
     this.watchThemes();
   }
 
-  private watchDir(dir: string, match: (f: string) => boolean): FSWatcher | null {
+  private watchDir(dir: string, match: (f: string) => boolean): DocWatch | null {
     try {
-      const w = watch(dir, { persistent: false }, (_e, f) => {
+      const watchDirectory = this.opts.watch ?? ((directory, listener) => watch(directory, { persistent: false }, listener));
+      const w = watchDirectory(dir, (_e, f) => {
         if (f === null || match(f)) this.scheduleObserve();
       });
       w.on("error", () => {});
@@ -354,20 +364,26 @@ export class DocSync {
     this.themesWatcher?.close();
     this.themesWatcher = null;
     for (const w of this.watchers.splice(0)) w.close();
-    clearTimeout(this.debounce);
+    this.debounce?.();
     this.debounce = undefined;
-    clearTimeout(this.syncTimer);
+    this.syncTimer?.();
     this.syncTimer = undefined;
+  }
+
+  private schedule(callback: () => void): () => void {
+    if (this.opts.schedule) return this.opts.schedule(callback, this.opts.debounceMs ?? 500);
+    const timer = setTimeout(callback, this.opts.debounceMs ?? 500);
+    timer.unref?.();
+    return () => clearTimeout(timer);
   }
 
   private scheduleObserve(): void {
     if (!this.started) return;
-    clearTimeout(this.debounce);
-    this.debounce = setTimeout(() => {
+    this.debounce?.();
+    this.debounce = this.schedule(() => {
       this.debounce = undefined;
       this.observe(); // a change it finds schedules the push
-    }, this.opts.debounceMs ?? 500);
-    this.debounce.unref?.();
+    });
   }
 
   /**
@@ -377,11 +393,10 @@ export class DocSync {
    */
   private scheduleSync(): void {
     if (!this.started || this.syncTimer) return;
-    this.syncTimer = setTimeout(() => {
+    this.syncTimer = this.schedule(() => {
       this.syncTimer = undefined;
       void this.syncAll().catch((e) => this.log(`sync: ${(e as Error).message}`));
-    }, this.opts.debounceMs ?? 500);
-    this.syncTimer.unref?.();
+    });
   }
 
   private loadSidecar(): void {
