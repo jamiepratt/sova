@@ -1,14 +1,13 @@
-// Run: npx tsx --test server/llm-inflight.test.ts
-// A throwaway live dir, an injected own counter, fake peer sockets and virtual time: no network, no
-// model (two hubs over real sockets: llm-inflight.integration.test.ts).
+// A throwaway live dir, an injected own counter, fake watchers/peer sockets and virtual time:
+// no network, model or native-event waits (native delivery: llm-inflight.integration.test.ts).
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { mkdirSync, mkdtempSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, test } from "node:test";
 import type { LlmFeedMessage, LlmInflight, SessionFeedMessage } from "../shared/protocol";
-import { hostCount, LlmInflightHub, meshTotal, parseProcessLlm, type LiveEntry, type LlmProcessSnapshot, type HubTimers, type OwnCounter, type PeerSocket, type PeerState, type TokenRing, type UnadoptedWorker, MAX_CALLS, MAX_SLOT_TOKENS } from "./llm-inflight";
+import { hostCount, LlmInflightHub, meshTotal, parseProcessLlm, type LiveEntry, type LlmProcessSnapshot, type HubTimers, type HubWatchFactory, type OwnCounter, type PeerSocket, type PeerState, type TokenRing, type UnadoptedWorker, MAX_CALLS, MAX_SLOT_TOKENS } from "./llm-inflight";
 
 const NOW = 1_000_000;
 const OWN_PID = 100;
@@ -195,8 +194,7 @@ class FakeSocket extends EventEmitter {
 }
 
 const frame = (instance: string, count: number): LlmFeedMessage => ({ type: "llm_local", host: "x", instance, local: { count, approximate: 0, partial: false, gaps: [] } });
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-/** Let queued stream, socket and watch callbacks land. */
+/** Let queued fake socket callbacks land. */
 const settle = () => new Promise((r) => setImmediate(r));
 
 /** Virtual time for a hub: its clock (`now`) and timers (`timers`) move only by `advance`, which fires
@@ -229,12 +227,31 @@ function virtualTime(start = Date.now()) {
     },
   };
 }
-/** Poll for what only the OS delivers (a watch event); the guard only stops a hang. */
-async function until(ok: () => boolean, what: string, guardMs = 30_000): Promise<void> {
-  const end = Date.now() + guardMs;
-  while (!ok()) {
-    if (Date.now() > end) assert.fail(`still waiting after ${guardMs} ms: ${what}`);
-    await sleep(5);
+class FakeWatcher extends EventEmitter {
+  closes = 0;
+  constructor(private readonly changed: Parameters<HubWatchFactory>[1]) {
+    super();
+  }
+  change(name: string | Buffer | null): void {
+    this.changed("rename", name);
+  }
+  close(): void {
+    this.closes++;
+  }
+}
+
+class FakeWatch {
+  attempts = 0;
+  readonly watchers: FakeWatcher[] = [];
+  readonly attach: HubWatchFactory = (dir, changed) => {
+    this.attempts++;
+    if (!existsSync(dir)) throw new Error("missing live directory");
+    const watcher = new FakeWatcher(changed);
+    this.watchers.push(watcher);
+    return watcher;
+  };
+  get current(): FakeWatcher {
+    return this.watchers.at(-1)!;
   }
 }
 const inflights = (msgs: SessionFeedMessage[]) => msgs.flatMap((m) => (m.type === "llm_inflight" ? [m.inflight] : []));
@@ -246,6 +263,7 @@ describe("LlmInflightHub", () => {
   let sockets: FakeSocket[];
   let hub: LlmInflightHub;
   let time: ReturnType<typeof virtualTime>;
+  let watch: FakeWatch;
   const record = (name: string, pid: number, llm: Partial<LlmProcessSnapshot> | null, heartbeat = Date.now()) =>
     writeFileSync(join(dir, name), JSON.stringify({ session: { pid }, heartbeat, ...(llm ? { presence: { llm: snap({ producer: `p${pid}`, pid, ...llm }) } } : {}) }));
 
@@ -255,9 +273,11 @@ describe("LlmInflightHub", () => {
     peers = [];
     sockets = [];
     time = virtualTime();
+    watch = new FakeWatch();
     hub = new LlmInflightHub({
       own,
       liveDir: dir,
+      watch: watch.attach,
       alive: (pid) => pid < 1000,
       now: time.now,
       timers: time.timers,
@@ -307,11 +327,17 @@ describe("LlmInflightHub", () => {
     const off2 = hub.addLocal(() => {});
     assert.equal(hub.listening, true);
     assert.equal(own.listeners, 1);
+    assert.equal(watch.watchers.length, 1, "listeners share one watcher");
     off1();
     assert.equal(hub.listening, true);
+    assert.equal(watch.current.closes, 0);
     off2();
     assert.equal(hub.listening, false);
     assert.equal(own.listeners, 0);
+    assert.equal(watch.current.closes, 1);
+    hub.stop();
+    assert.equal(watch.current.closes, 1, "teardown closes once");
+    assert.equal(time.waiting(40), 0, "the sweep is cleared");
   });
 
   test("no peer socket while the mesh is off, nor for a peer listener alone", () => {
@@ -437,23 +463,35 @@ describe("the live-record watch comes back", () => {
     const dir = join(root, "live");
     const own = new FakeOwn();
     const time = virtualTime();
-    const hub = new LlmInflightHub({ own, liveDir: dir, alive: () => true, debounceMs: 5, sweepMs: 40, now: time.now, timers: time.timers });
+    const watch = new FakeWatch();
+    const hub = new LlmInflightHub({ own, liveDir: dir, watch: watch.attach, alive: () => true, debounceMs: 5, sweepMs: 40, now: time.now, timers: time.timers });
     const got: SessionFeedMessage[] = [];
     try {
       hub.addBrowser((m) => got.push(m));
-      assert.equal((hub as any).watcher, null, "no dir yet");
+      assert.equal(watch.watchers.length, 0, "no dir yet");
+      assert.equal(watch.attempts, 1);
       mkdirSync(dir);
       await time.advance(40);
-      assert.notEqual((hub as any).watcher, null, "attached once the dir exists");
-      (hub as any).watcher.emit("error", new Error("watch lost"));
-      assert.equal((hub as any).watcher, null);
+      assert.equal(watch.watchers.length, 1, "attached once the dir exists");
+      const lost = watch.current;
+      lost.emit("error", new Error("watch lost"));
+      assert.equal(lost.closes, 1);
       await time.advance(40);
-      assert.notEqual((hub as any).watcher, null, "re-attached");
+      assert.equal(watch.watchers.length, 2, "re-attached");
+      assert.equal(watch.attempts, 3);
       // the re-attached watch sees a new record without waiting for the 30 s rescan
       writeFileSync(join(dir, "p9-x.json"), JSON.stringify({ session: { pid: 9 }, heartbeat: Date.now(), presence: { llm: snap({ producer: "p9", pid: 9, active: 2 }) } }));
-      await until(() => time.waiting(5) > 0, "the watch event's debounce");
+      watch.current.change("p9-x.json");
+      assert.equal(time.waiting(5), 1, "the named event arms the debounce");
+      assert.equal(inflights(got).at(-1)!.count, 0, "not read before the debounce");
       await time.advance(5);
       assert.equal(inflights(got).at(-1)!.count, 2);
+      await time.advance(40);
+      assert.equal(watch.watchers.length, 2, "the healthy replacement is not duplicated");
+      hub.stop();
+      assert.equal(lost.closes, 1);
+      assert.equal(watch.current.closes, 1);
+      assert.equal(time.waiting(40), 0);
     } finally {
       hub.stop();
       rmSync(root, { recursive: true, force: true });
@@ -468,7 +506,8 @@ describe("the worker registry is read per sweep, never per call", () => {
     let reads = 0;
     let registry: UnadoptedWorker[] = [{ key: "a/1", producer: "w7", counts: { active: 1, approximate: 0, claudeTurns: 0, degraded: false } }];
     const time = virtualTime();
-    const hub = new LlmInflightHub({ own, liveDir: dir, alive: () => true, debounceMs: 1, sweepMs: 150, workers: () => (reads++, registry), now: time.now, timers: time.timers });
+    const watch = new FakeWatch();
+    const hub = new LlmInflightHub({ own, liveDir: dir, watch: watch.attach, alive: () => true, debounceMs: 1, sweepMs: 150, workers: () => (reads++, registry), now: time.now, timers: time.timers });
     const got: SessionFeedMessage[] = [];
     try {
       hub.addBrowser((m) => got.push(m));
@@ -479,14 +518,29 @@ describe("the worker registry is read per sweep, never per call", () => {
       assert.equal(inflights(got).at(-1)!.count, 1, "own 0 + the unadopted worker's 1");
       // the worker is adopted: its parent's record names it, before the registry is read again
       writeFileSync(join(dir, "p3-x.json"), JSON.stringify({ session: { pid: 3 }, heartbeat: Date.now(), presence: { llm: snap({ producer: "p3", pid: 3, active: 1, folded: ["w7"] }) } }));
-      await until(() => time.waiting(1) > 0, "the watch event's debounce");
+      watch.current.change("p3-x.json");
+      assert.equal(time.waiting(1), 1, "the named event arms the debounce");
+      assert.equal(reads, 1, "the watch event does not reread the registry");
       await time.advance(40);
       assert.equal(reads, 1);
       assert.equal(inflights(got).at(-1)!.count, 1, "counted once: the held copy is excluded by the parent's folded");
       registry = [];
       await time.advance(200);
       assert.equal(reads >= 2, true, "the sweep refreshed it");
+      assert.equal(reads, 2, "exactly one sweep refreshed the registry");
       assert.equal(inflights(got).at(-1)!.count, 1);
+      // Once the parent stops folding it, a stale held registry would wrongly add the worker.
+      writeFileSync(join(dir, "p3-x.json"), JSON.stringify({ session: { pid: 3 }, heartbeat: Date.now(), presence: { llm: snap({ producer: "p3", pid: 3, active: 0, folded: [] }) } }));
+      watch.current.change("p3-x.json");
+      await time.advance(1);
+      assert.equal(inflights(got).at(-1)!.count, 0, "the sweep replaced the cached worker list");
+      assert.equal(reads, 2, "another watch debounce still does not reread the registry");
+      assert.equal(watch.watchers.length, 1, "sweeps do not duplicate the watcher");
+      hub.stop();
+      assert.equal(watch.current.closes, 1);
+      assert.equal(time.waiting(1), 0);
+      assert.equal(time.waiting(150), 0);
+      assert.equal(own.listeners, 0);
     } finally {
       hub.stop();
       rmSync(dir, { recursive: true, force: true });
@@ -601,7 +655,7 @@ describe("tokens: the hub", () => {
     const time = virtualTime(NOW);
     own.value = snap({ tokens: ringAt(S, {}) });
     const hub = new LlmInflightHub({
-      own, liveDir: dir, alive: () => true, debounceMs: 1, sweepMs: 20, now: () => clock, timers: time.timers, peerPingMs: 1e9, peerDeadMs: 1e9,
+      own, liveDir: dir, watch: new FakeWatch().attach, alive: () => true, debounceMs: 1, sweepMs: 20, now: () => clock, timers: time.timers, peerPingMs: 1e9, peerDeadMs: 1e9,
       mesh: { peers: () => [{ id: "a", url: "http://a" }], selfId: () => "here", connect: (url) => { const s = new FakeSocket(url); sockets.push(s); return s as unknown as PeerSocket; } },
     });
     const got: SessionFeedMessage[] = [];

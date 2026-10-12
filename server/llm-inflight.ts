@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync, watch, type FSWatcher } from "node:fs";
+import { readdirSync, readFileSync, watch } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { LlmFeedMessage, LlmInflight, LlmInflightGap, LlmTokens, SessionFeedMessage } from "../shared/protocol";
@@ -384,7 +384,16 @@ export interface LlmInflightOptions {
   debounceMs?: number;
   /** Where its timers run (the sweep, the debounce, peer answers and retries); default the globals. */
   timers?: HubTimers;
+  /** Attaches the live-record watcher; default node:fs.watch. */
+  watch?: HubWatchFactory;
 }
+
+export interface HubWatcher {
+  on(event: "error", fn: () => void): unknown;
+  close(): void;
+}
+
+export type HubWatchFactory = (dir: string, changed: (event: string, name: string | Buffer | null) => void) => HubWatcher;
 
 export interface HubTimers {
   setTimeout(fn: () => void, ms: number): unknown;
@@ -444,7 +453,7 @@ export class LlmInflightHub {
   private readonly links = new Map<string, PeerLink>();
   /** Peers that have sent a count on some connection: one silent later is unreachable, not old. */
   private readonly supported = new Set<string>();
-  private watcher: FSWatcher | null = null;
+  private watcher: HubWatcher | null = null;
   private sweep: unknown = null;
   private sweeps = 0;
   private offOwn: (() => void) | null = null;
@@ -561,7 +570,7 @@ export class LlmInflightHub {
   /** Watch the live dir; false when it can't be watched now (missing, or the watch failed). */
   private attachWatcher(): boolean {
     try {
-      const w = watch(this.opts.liveDir, (_event, name) => {
+      const w = (this.opts.watch ?? watch)(this.opts.liveDir, (_event, name) => {
         if (typeof name === "string" && name) this.fileChanged(name);
         else this.schedule(); // the platform didn't say which: the next sweep rescans
       });
