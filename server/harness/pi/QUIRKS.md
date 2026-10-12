@@ -60,6 +60,7 @@ Paths in "Where" are under `server/`.
 | P22 declared-tools | private-read | `PiHarnessSession.declaredTools` (harness/pi/session.ts), `toolSource` (harness/pi/session.ts), `installNativeCompactionHooks` (harness/pi/native-compaction-extension.ts) | `Agent.state.tools`, `AgentSession._hiddenDeclarations`, `AgentSession._applyToolLoadout`, `AgentSession.getAllTools`, `SourceInfo.path` | pi offers a public read of the declared tools as a request will send them |
 | P23 turn-end-loadout | ordering | `join` (pi-config/extensions/link/index.ts) | `agentLoop`, `AgentSession._installAgentNextTurnRefresh`, `AgentSession._preparePromptAndToolLoadout`, `ExtensionAPI.registerTool` | pi offers a documented hook for changing the tool set before a run's next request |
 | P24 native-request-witness | monkey-patch | `installNativeCompactionHooks` (harness/pi/native-compaction-extension.ts), `createNativeCompactionExtension` (harness/pi/native-compaction-extension.ts) | `Agent.transformContext`, `Agent.streamFunction`, `AgentSession.bindExtensions`, `AgentSession._installAgentForcedPromptProjection`, `AgentSession._installHiddenDeclarationsProjection`, `ExtensionContext.model` | pi offers a documented final request-context hook with live session identity |
+| P25 native-compaction-commit | monkey-patch | `installNativeCompactionCommitGuard` (harness/pi/native-compaction-extension.ts) | `ExtensionRunner.emit`, `AgentSession.compact`, `AgentSession._runAutoCompaction`, `SessionManager.appendCompaction` | pi offers a final asynchronous validation hook followed by an atomic compaction write |
 | T1 scripted-model (test-only) | private-write | `ScriptedModel.attach` (harness/pi/testing/scripted-model.ts) | `AgentSession._modelRuntime`, `Agent.getApiKey`, `Agent.streamFunction` | pi offers a public test model hook |
 
 ## What each one relies on
@@ -212,6 +213,12 @@ for that request. A retained `ExtensionContext.model` getter reads the current s
 than the model at `session_start`; native compatibility checks must not freeze that getter.
 
 Canary: `P24 native-request-witness: an after-bind transform sees final context projections before streaming and retained context reads the current model`.
+
+### P25 native-compaction-commit
+
+Manual and automatic compaction await the public `extensionRunner.emit` instance method for the complete `session_before_compact` chain. A later handler returning `undefined` preserves an earlier compaction result. Both paths read `result.compaction` and reach `appendCompaction` with no intervening await. Sova wraps that dispatch with the original receiver and event, rechecks fresh account identity only for its own result, then hands Pi an owned result view whose compaction getter rechecks synchronous mutable state. Unrelated results and events pass through unchanged. This pins the observed SDK stage, not arbitrary malicious-plugin or microtask atomicity; manual hosted ownership is independently checked again by P2 at the actual append.
+
+Canary: `P25 native-compaction-commit: complete before-compact dispatch precedes synchronous result read and append in manual and automatic paths`.
 
 ### T1 scripted-model (test-only)
 

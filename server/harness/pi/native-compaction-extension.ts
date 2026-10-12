@@ -3,7 +3,7 @@ import { isDeepStrictEqual } from 'node:util';
 import {
   convertToLlm, generateSummaryWithUsage,
   type AgentSession, type ContextEvent, type ExtensionContext, type InlineExtension,
-  type SessionBeforeCompactEvent,
+  type SessionBeforeCompactEvent, type SessionBeforeCompactResult,
 } from '@earendil-works/pi-coding-agent';
 import { callNativeCompaction, type NativeCompactionCallOptions as ModelsSimpleStreamOptions, type NativeCompactionCallResult } from './native-compaction-call';
 import { compatibleNative, latestNativeCompaction, parseNativeCompaction, replayNativePrefix, snapshotNativeInput, type NativeIdentity } from './native-compaction-state';
@@ -27,6 +27,7 @@ interface Controller {
   ctx?: ExtensionContext;
   prepare?: (messages: Message[], signal: AbortSignal) => Promise<Message[]>;
   witness?: { summary: string; item: unknown };
+  commits: WeakMap<object, { valid(): Promise<boolean>; validSync(): boolean }>;
 }
 const controllers = new WeakMap<object, Controller>();
 const enabled = (c: Controller) => (c.options.enabled?.() ?? process.env.SOVA_NATIVE_COMPACTION === 'on');
@@ -80,10 +81,33 @@ function currentSummary(manager: ExtensionContext['sessionManager']): string | u
   }
   return undefined;
 }
+/** P25: finish the entire handler chain before fresh auth, then check mutable state at the SDK's
+ * synchronous result read. Only this factory's own compaction objects acquire the guard. */
+function installNativeCompactionCommitGuard(session: AgentSession, c: Controller): void {
+  const runner = session.extensionRunner;
+  const emit = runner.emit.bind(runner);
+  runner.emit = (async (event: Parameters<typeof emit>[0]) => {
+    const result = await emit(event);
+    if (event.type !== 'session_before_compact') return result;
+    const before = result as SessionBeforeCompactResult | undefined;
+    const compaction = before?.compaction;
+    const guard = compaction && c.commits.get(compaction);
+    if (!guard || before?.cancel) return result;
+    if (!(await guard.valid())) return { cancel: true };
+    // An owned view, not a mutation of any SDK or other extension's result. Pi reads this
+    // after awaiting emit and reaches appendCompaction without another await (P25 canary).
+    return { ...before, get compaction() {
+      if (!guard.validSync()) throw new Error('Compaction cancelled');
+      return compaction;
+    } };
+  }) as typeof runner.emit;
+}
+
 /** Install after binding: witness AFTER every context hook and pi's prompt/loadout projections. */
 export function installNativeCompactionHooks(session: AgentSession): void {
   const c = controllers.get(session.sessionManager);
   if (!c || c.snapshot) return;
+  installNativeCompactionCommitGuard(session, c);
   c.snapshot = () => {
     const hidden = (session as unknown as { _hiddenDeclarations?: ReadonlySet<string> })._hiddenDeclarations;
     return { role: 'system', content: session.systemPrompt, timestamp: Date.now(),
@@ -153,7 +177,7 @@ export function installNativeCompactionHooks(session: AgentSession): void {
 }
 
 export function createNativeCompactionExtension(options: NativeCompactionExtensionOptions): InlineExtension {
-  const c: Controller = { options };
+  const c: Controller = { options, commits: new WeakMap() };
   return { name: 'sova-native-compaction', hidden: true, factory(pi) {
     pi.on('session_start', async (_event, ctx) => { controllers.set(ctx.sessionManager, c); c.registry = ctx.modelRegistry; c.ctx = ctx; });
     pi.on('session_shutdown', async (_event, ctx) => { controllers.delete(ctx.sessionManager); c.witness = undefined; });
@@ -164,12 +188,16 @@ export function createNativeCompactionExtension(options: NativeCompactionExtensi
       const startIdentity = await identity(ctx);
       if (event.signal.aborted || !available(c) || ctx.sessionManager.getLeafId() !== leaf || ctx.model !== model) return { cancel: true };
       if (!startIdentity || !model) return;
-      const valid = async () => {
+      const validSync = () => {
         try { assertCompactionModelAllowed(model); } catch { return false; }
-        if (event.signal.aborted || !available(c) || ctx.sessionManager.getLeafId() !== leaf || ctx.model !== model) return false;
-        const now = await identity(ctx);
-        return !!now && compatibleNative({ ...startIdentity } as never, now) && !event.signal.aborted &&
-          !!available(c) && ctx.sessionManager.getLeafId() === leaf && ctx.model === model;
+        return !event.signal.aborted && !!available(c) && ctx.sessionManager.getLeafId() === leaf && ctx.model === model;
+      };
+      const valid = async () => {
+        if (!validSync()) return false;
+        try {
+          const now = await identity(ctx);
+          return !!now && compatibleNative({ ...startIdentity } as never, now) && validSync();
+        } catch { return false; }
       };
       // Invalidation after any await is explicit cancellation, not default compaction fallback.
       if (!(await valid())) return { cancel: true };
@@ -235,11 +263,13 @@ export function createNativeCompactionExtension(options: NativeCompactionExtensi
       const state = native ? parseNativeCompaction({ ...startIdentity, v: 1, protocol: 'codex-responses-v2',
         boundary: { kind: 'pi-old-prefix', firstKeptEntryId: event.preparation.firstKeptEntryId },
         replacementHistory: native.replacementHistory, responseId: native.responseId }) : null;
-      return { compaction: { summary: portable.text, firstKeptEntryId: event.preparation.firstKeptEntryId,
+      const compaction = { summary: portable.text, firstKeptEntryId: event.preparation.firstKeptEntryId,
         tokensBefore: event.preparation.tokensBefore, ...(accounting.usage ? { usage: accounting.usage } : {}),
         details: { readFiles: [...fileOps.read], modifiedFiles: [...new Set([...fileOps.written, ...fileOps.edited])],
           sovaCompactionUsage: accounting.components, ...(state ? { sovaNativeCompaction: state } : {}) },
-      } };
+      };
+      c.commits.set(compaction, { valid, validSync });
+      return { compaction };
     });
   } };
 }

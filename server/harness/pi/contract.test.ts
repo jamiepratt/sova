@@ -5,7 +5,7 @@
 // faux provider, registered through the public ModelRuntime API: no network, no private fields.
 // C1 the session manager's append* methods (the entry union), C2 the custom entry's line, C3 the event
 // names and fields chat-manager's bind() reads, C5 image content as prompt/steer take and store it.
-// P1-P24 and T1 are the quirk canaries (QUIRKS.md, quirks.ts): each asserts that a pi behaviour a Sova
+// P1-P25 and T1 are the quirk canaries (QUIRKS.md, quirks.ts): each asserts that a pi behaviour a Sova
 // workaround or assumption rests on still holds. Their turns run on testing/scripted-model.ts (a held
 // reply makes the mid-turn windows deterministic). When one fails, triage it by its QUIRKS.md row.
 import assert from "node:assert/strict";
@@ -811,6 +811,65 @@ return w + ":" + r.stopReason;`;
     assert.deepEqual(systems.flatMap(m => m.toolsAdded ?? []).map(t => t.name), ["codemode"], "hidden echo was filtered before the witness");
     assert.ok(!JSON.stringify(model.calls[0]!.context).includes("portable checkpoint"), "the provider stream reads the witnessed context, not the untransformed projection");
     session.dispose();
+  });
+
+  test("P25 native-compaction-commit: complete before-compact dispatch precedes synchronous result read and append in manual and automatic paths", async () => {
+    for (const automatic of [false, true]) {
+      const order: string[] = [];
+      let provided: any;
+      const first = (api: any) => api.on("session_before_compact", (event: any) => {
+        order.push("first");
+        provided = summaryOf(event);
+        provided.compaction.details = { owned: "contract-only" };
+        return provided;
+      });
+      const late = (api: any) => api.on("session_before_compact", async () => {
+        await Promise.resolve();
+        order.push("late");
+        return undefined;
+      });
+      const { session, sm, model } = await quirkSession({ extensions: [first, late], settings: { compaction: { enabled: automatic, keepRecentTokens: 1 } } });
+      sm.appendMessage({ role: "user", content: "Old contract input", timestamp: 1 });
+      sm.appendMessage(fauxAssistantMessage("Old contract reply ".repeat(80)));
+      sm.appendMessage({ role: "user", content: "Kept contract tail ".repeat(80), timestamp: 2 });
+      session.refreshContext();
+      const runner = session.extensionRunner;
+      const emit = runner.emit.bind(runner);
+      let yieldedAfterRead = false;
+      let ordinaryEvents = 0;
+      runner.emit = (async (event: any) => {
+        const result = await emit(event);
+        if (event.type !== "session_before_compact") { ordinaryEvents++; return result; }
+        assert.equal(result, provided, "later undefined retains the exact earlier result");
+        assert.deepEqual(order, ["first", "late"], "the wrapped emit awaited the COMPLETE public handler chain");
+        await Promise.resolve();
+        order.push("final");
+        return { ...result, get compaction() {
+          order.push("read");
+          queueMicrotask(() => { yieldedAfterRead = true; });
+          return provided.compaction;
+        } };
+      }) as typeof runner.emit;
+      const append = sm.appendCompaction;
+      sm.appendCompaction = (...args: Parameters<typeof append>) => {
+        assert.equal(yieldedAfterRead, false, "an await after the result read would invalidate the synchronous commit-stage guarantee");
+        assert.ok(order.includes("read"));
+        assert.equal(args[3], provided.compaction.details, "the SDK passes the result's exact details into the write");
+        order.push("append");
+        return append.apply(sm, args);
+      };
+      try {
+        if (automatic) {
+          model.reply({ text: "Threshold reply", usage: { input: 199_999, totalTokens: 199_999 } });
+          await session.prompt("Trigger automatic threshold");
+          await session.waitForIdle();
+        } else await session.compact();
+        assert.equal(sm.getEntries().filter((entry: any) => entry.type === "compaction").length, 1, automatic ? "automatic path reached the real write" : "manual path reached the real write");
+        assert.deepEqual(order.slice(0, 3), ["first", "late", "final"]);
+        assert.equal(order.at(-1), "append");
+        assert.ok(ordinaryEvents > 0, "ordinary dispatches still reach the original runner");
+      } finally { sm.appendCompaction = append; runner.emit = emit; session.dispose(); }
+    }
   });
 
   test("T1 scripted-model: the members the test double replaces exist, and it runs a turn", async () => {

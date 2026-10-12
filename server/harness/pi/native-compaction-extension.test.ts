@@ -69,7 +69,11 @@ async function fixture() {
   extension.factory({ on: (name: string, hook: any) => { hooks[name] = hook; }, getThinkingLevel: () => 'off' } as any);
   await hooks.session_start({}, ctx);
   const ordinary: any[] = [];
-  const session: any = { sessionManager: sm, systemPrompt: 'EFFECTIVE SYSTEM', agent: {
+  const session: any = { sessionManager: sm, systemPrompt: 'EFFECTIVE SYSTEM',
+    // Public runner surface required by the installer. These unit cases still invoke the
+    // factory hook directly; the actual SDK dispatch/commit-stage proof lives separately.
+    extensionRunner: { async emit(event: { type: string }) { return hooks[event.type]?.(event, ctx); } },
+    agent: {
     state: { tools: [{ name: 'visible', description: 'Effective visible', parameters: {} }, { name: 'hidden', description: 'Hidden', parameters: {} }] },
     transformContext: async (messages: any[]) => transform(messages),
     streamFunction: async (_m: any, _context: any, options: any) => { const payload = await options?.onPayload?.(ordinaryPayload, currentModel) ?? ordinaryPayload; ordinary.push(payload); return payload; },

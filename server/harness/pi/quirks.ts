@@ -375,6 +375,17 @@ export const PI_QUIRKS: readonly PiQuirk[] = [
     retireWhen: "pi offers a documented final request-context hook with live session identity",
   },
   {
+    id: "P25",
+    name: "native-compaction-commit",
+    kind: "monkey-patch",
+    relies:
+      "Manual and automatic compaction await the public extensionRunner.emit instance method for the complete session_before_compact handler chain; later undefined handlers retain the earlier result. After reading result.compaction, both paths reach appendCompaction without another await. An owned result view can therefore recheck synchronous state after the final asynchronous account lookup, without changing other results or starting default compaction.",
+    pi: ["ExtensionRunner.emit", "AgentSession.compact", "AgentSession._runAutoCompaction", "SessionManager.appendCompaction"],
+    where: [{ file: "server/harness/pi/native-compaction-extension.ts", symbol: "installNativeCompactionCommitGuard" }],
+    canary: "P25 native-compaction-commit: complete before-compact dispatch precedes synchronous result read and append in manual and automatic paths",
+    retireWhen: "pi offers a final asynchronous validation hook followed by an atomic compaction write",
+  },
+  {
     id: "T1",
     name: "scripted-model (test-only)",
     kind: "private-write",
