@@ -57,6 +57,32 @@ test("no other platform, no CLAUDE_SECURESTORAGE_CONFIG_DIR and no throwaway HOM
 	assert.equal(keychainApplies(mac()), true);
 });
 
+test("test-process marks refuse both real executors even when the home equality gate passes; fixture executors still work", async () => {
+	const names = ["SOVA_TEST_HOME", "NODE_TEST_CONTEXT", "NODE_ENV"] as const;
+	const inherited = names.map((name) => process.env[name]);
+	try {
+		for (const name of names) {
+			for (const other of names) delete process.env[other];
+			process.env[name] = name === "NODE_ENV" ? "test" : "fixture";
+			resetKeychainMtimes();
+			assert.equal(keychainApplies(mac()), true, "Bun can report the same throwaway home from both APIs");
+			// No injected executor: the unit-tier guard would fail the file if security were attempted.
+			assert.equal(await readKeychainCredentials(LOGIN, mac()), undefined, name);
+			assert.equal(keychainItemMtime(LOGIN, mac({ fresh: true })), undefined, name);
+			const f = fakeExec(ITEM);
+			assert.deepEqual(await readKeychainCredentials(LOGIN, mac({ exec: f.exec })), JSON.parse(ITEM));
+			assert.equal(f.calls.length, 1, "an explicit fixture executor remains usable");
+			assert.equal(keychainItemMtime(LOGIN, mac({ fresh: true, execSync: () => ATTRS })), Date.UTC(2026, 9, 4, 13, 3, 50));
+		}
+	} finally {
+		for (const [i, name] of names.entries()) {
+			if (inherited[i] === undefined) delete process.env[name];
+			else process.env[name] = inherited[i];
+		}
+		resetKeychainMtimes();
+	}
+});
+
 test("every token-read failure is quiet: no item, a locked keychain, a timeout, unparsable output", async () => {
 	for (const answer of [new Error("exit 44"), new Error("exit 36"), new Error("timed out"), "not json", ""]) {
 		assert.equal(await readKeychainCredentials(undefined, mac({ exec: fakeExec(answer).exec })), undefined);

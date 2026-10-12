@@ -7,8 +7,8 @@
 //   node server/runtime-choice.ts launch [--node]   # prints "node" or "bun\n<bun path>"; exits 1 when bun is missing
 
 import { execFileSync } from "node:child_process";
-import { accessSync, constants, statSync } from "node:fs";
-import { delimiter, join, resolve } from "node:path";
+import { accessSync, constants, realpathSync, statSync } from "node:fs";
+import { basename, delimiter, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 export type RuntimeName = "node" | "bun";
@@ -31,17 +31,37 @@ function isExecutableFile(path: string): boolean {
   }
 }
 
+/** Unix mise dispatch shims are symlinks to the mise executable, not standalone Bun binaries. */
+function isMiseShim(path: string): boolean {
+  try {
+    const target = basename(realpathSync(path));
+    return target === "mise" || target === "mise.exe";
+  } catch {
+    return false;
+  }
+}
+
 /** The Bun binary: $SOVA_BUN (only it, when set), else `bun` on PATH, else `mise which bun`. */
 export function resolveBun(env: Env = process.env, mise: () => string | null = () => miseWhichBun(env)): { path: string } | { missing: string } {
   const pinned = env.SOVA_BUN;
   if (pinned) return isExecutableFile(pinned) ? { path: pinned } : { missing: `SOVA_BUN=${pinned} is not an executable file` };
+  let checkedMise = false;
+  let viaMise: string | null = null;
+  const actualMiseBun = () => {
+    if (!checkedMise) { checkedMise = true; viaMise = mise(); }
+    return viaMise && isExecutableFile(viaMise) && !isMiseShim(viaMise) ? viaMise : null;
+  };
   for (const dir of (env.PATH ?? "").split(delimiter)) {
     if (!dir) continue;
     const candidate = join(dir, "bun");
-    if (isExecutableFile(candidate)) return { path: candidate };
+    if (!isExecutableFile(candidate)) continue;
+    if (!isMiseShim(candidate)) return { path: candidate };
+    // Resolve while the parent still has its trusted HOME, before a hermetic child changes it.
+    const actual = actualMiseBun();
+    if (actual) return { path: actual };
   }
-  const viaMise = mise();
-  if (viaMise && isExecutableFile(viaMise)) return { path: viaMise };
+  const actual = actualMiseBun();
+  if (actual) return { path: actual };
   return { missing: "no bun on PATH and `mise which bun` found none" };
 }
 

@@ -44,12 +44,24 @@ export interface KeychainOptions {
 	execSync?: KeychainExecSync;
 }
 
+// HOME does not isolate the macOS keychain. Bun also reports the changed HOME from userInfo(),
+// so the home equality gate alone cannot protect tests. Only an injected fixture executor may
+// answer in a test process; use the actual process marks, not a caller's synthetic env.
+function refuseTestKeychain(): void {
+	if (process.env.SOVA_TEST_HOME !== undefined || process.env.NODE_TEST_CONTEXT !== undefined || process.env.NODE_ENV === "test") {
+		throw new Error("system keychain unavailable in tests");
+	}
+}
+
 // The error (which carries stdout) is dropped, so the item never reaches a message.
-const execSecurity: KeychainExec = (file, args, options) =>
-	new Promise((resolve, reject) => {
+const execSecurity: KeychainExec = async (file, args, options) => {
+	refuseTestKeychain();
+	return new Promise((resolve, reject) => {
 		execFile(file, args, { ...options, encoding: "utf8", windowsHide: true }, (err, stdout) => (err ? reject(new Error("keychain read failed")) : resolve(stdout)));
 	});
+};
 const execSecuritySync: KeychainExecSync = (file, args, options) => {
+	refuseTestKeychain();
 	try {
 		return execFileSync(file, args, { ...options, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], windowsHide: true });
 	} catch {

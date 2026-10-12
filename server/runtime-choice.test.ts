@@ -1,6 +1,6 @@
 // scripts/start-server.sh run as a program is runtime-choice.integration.test.ts.
 import { strict as assert } from "node:assert";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after, describe, test } from "node:test";
@@ -52,6 +52,35 @@ describe("resolveBun", () => {
     assert.deepEqual(resolveBun({ PATH: `/nonexistent:${dirname(onPath)}` }, () => viaMise), { path: onPath });
     assert.deepEqual(resolveBun({ PATH: "/nonexistent" }, () => viaMise), { path: viaMise });
     assert.ok("missing" in resolveBun({ PATH: "/nonexistent" }, noMise));
+  });
+  test("a mise dispatch shim on PATH resolves to the actual Bun before child HOME changes", () => {
+    const mise = stub("mise");
+    const shim = join(dirname(mise), "bun");
+    symlinkSync(mise, shim);
+    const actual = stub("bun");
+    const later = stub("bun");
+    let queries = 0;
+    assert.deepEqual(resolveBun({ PATH: `${dirname(shim)}:${dirname(later)}` }, () => (queries++, actual)), { path: actual });
+    assert.equal(queries, 1);
+    assert.notEqual(actual, shim, "the child receives Bun itself, never the mise dispatcher");
+    assert.deepEqual(resolveBun({ SOVA_BUN: shim, PATH: dirname(actual) }, () => assert.fail("explicit SOVA_BUN never invokes mise")), { path: shim });
+    assert.deepEqual(resolveBun({ PATH: `${dirname(actual)}:${dirname(shim)}` }, () => assert.fail("direct PATH Bun keeps priority")), { path: actual });
+  });
+  test("an unresolved or self-resolving mise shim is skipped, not executed or replaced with Node", () => {
+    const mise = stub("mise");
+    const shim = join(dirname(mise), "bun");
+    symlinkSync(mise, shim);
+    const direct = stub("bun");
+    const unusable = join(freshRoot(), "bun");
+    writeFileSync(unusable, "not executable");
+    for (const answer of [null, shim, mise, unusable, join(tmp, "missing-bun")]) {
+      let queries = 0;
+      const query = () => (queries++, answer);
+      assert.deepEqual(resolveBun({ PATH: `${dirname(shim)}:${dirname(direct)}` }, query), { path: direct });
+      assert.equal(queries, 1, "mise is queried once while inspecting the shim");
+      assert.ok("missing" in resolveBun({ PATH: dirname(shim) }, query), "a dispatcher is not a usable Bun binary");
+      assert.equal(launch({ PATH: dirname(shim) }, query).runtime, "error", "no Node fallback");
+    }
   });
   test("a non-executable file is not bun", () => {
     const dir = join(tmp, `plain${n++}`);
