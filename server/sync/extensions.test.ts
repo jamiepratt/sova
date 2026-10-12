@@ -2,11 +2,11 @@
 // they lack, and a peer entry whose dist isn't installed here is marked so (never proxied).
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { findExtension, listExtensions, setPeerExtensions, validateExtension, type ExtensionEntry } from "../extensions";
-import { ExtensionSync, type ExtensionPeer } from "./extensions";
+import { ExtensionSync, type ExtensionPeer, type ExtensionSyncOptions } from "./extensions";
 
 const root = mkdtempSync(join(tmpdir(), "sova-ext-sync-"));
 after(() => rmSync(root, { recursive: true, force: true }));
@@ -148,37 +148,84 @@ test("server/extensions hook: unset, the listing and lookup are exactly the mani
   globalThis.fetch = realFetch;
 });
 
-test("a change to this host's manifest is pushed to peers by itself (no reconcile wait)", async () => {
-  const dir = join(root, "watched");
-  mkdirSync(dir);
-  const manifest = join(dir, "extensions.json");
-  const dist = join(root, "watched-dist");
-  mkdirSync(dist);
-  const readLocal = (): ExtensionEntry[] => {
-    try {
-      const d = JSON.parse(readFileSync(manifest, "utf8")) as { extensions: unknown[] };
-      return d.extensions.map((r) => validateExtension(r)).flatMap((v) => ("entry" in v ? [v.entry] : []));
-    } catch {
-      return [];
-    }
+function manualWatch() {
+  let emit: (event: string, filename: string | Buffer | null) => void = () => assert.fail("watch not started");
+  let starts = 0;
+  let closes = 0;
+  const directories: string[] = [];
+  const tasks: { callback: () => void; delay: number; cancelled: boolean }[] = [];
+  const watch: NonNullable<ExtensionSyncOptions["watch"]> = (directory, listener) => {
+    starts++;
+    directories.push(directory);
+    emit = listener;
+    return { close: () => { closes++; }, on: () => {} };
   };
+  const schedule: NonNullable<ExtensionSyncOptions["schedule"]> = (callback, delay) => {
+    const task = { callback, delay, cancelled: false };
+    tasks.push(task);
+    return () => { task.cancelled = true; };
+  };
+  return { watch, schedule, directories, tasks, emit: (filename: string | Buffer | null, event = "change") => emit(event, filename),
+    starts: () => starts, closes: () => closes,
+    flush: () => { for (const task of tasks.splice(0)) if (!task.cancelled) task.callback(); } };
+}
+
+test("manifest events debounce and coalesce into one push of the latest list without reconcile", async () => {
+  const driver = manualWatch();
+  let local: ExtensionEntry[] = [];
   const b = host("b", [], () => []);
-  const aDir = join(root, "watched-a");
-  mkdirSync(aDir);
+  let pushes = 0;
+  let delivered!: () => void;
+  const delivery = new Promise<void>((resolve) => { delivered = resolve; });
   const a = new ExtensionSync({
-    hostId: "a",
-    file: join(aDir, "mesh-extensions.json"),
-    local: readLocal,
-    validate: validateExtension,
-    peers: () => [{ id: "b", extensions: async () => structuredClone(b.sync.published()), notify: async (list) => b.sync.receive("a", structuredClone(list)) }],
+    hostId: "a", file: join(root, "manual-a.json"), local: () => local, validate: validateExtension,
+    watch: driver.watch, schedule: driver.schedule,
+    peers: () => [{ id: "b", extensions: async () => structuredClone(b.sync.published()), notify: async (list) => {
+      pushes++;
+      b.sync.receive("a", structuredClone(list));
+      delivered();
+    } }],
   });
-  a.start(manifest, 30);
+  a.start(join(root, "extensions.json"), 30);
   try {
-    writeFileSync(manifest, JSON.stringify({ version: 1, extensions: [entry("fresh", dist)] }));
-    const end = Date.now() + 15_000; // a hang guard: the watcher decides when
-    while (!b.sync.peerEntries().some((p) => p.entry.id === "fresh") && Date.now() < end) await new Promise((r) => setTimeout(r, 20));
+    a.start(join(root, "extensions.json"), 30);
+    assert.equal(driver.starts(), 1, "starting twice does not install another watcher");
+    assert.deepEqual(driver.directories, [root], "watch the folder for atomic replacements");
+    driver.emit("unrelated.json");
+    assert.equal(driver.tasks.length, 0, "unrelated filenames do not schedule a push");
+    local = [entry("old", "/nowhere")];
+    driver.emit("extensions.json");
+    local = [entry("fresh", "/nowhere")];
+    driver.emit("extensions.json", "rename");
+    driver.emit(null);
+    assert.deepEqual(driver.tasks.map((t) => [t.delay, t.cancelled]), [[30, true], [30, true], [30, false]]);
+    assert.deepEqual(b.sync.peerEntries(), [], "nothing is pushed before the debounce fires");
+    driver.flush();
+    await delivery;
+    assert.equal(pushes, 1);
     assert.deepEqual(b.sync.peerEntries().map((p) => [p.entry.id, p.from]), [["fresh", "a"]]);
   } finally {
     a.stop();
   }
+  assert.equal(driver.closes(), 1);
+});
+
+test("stopping cancels a pending manifest push, and a later start installs a new watcher", () => {
+  const driver = manualWatch();
+  let pushes = 0;
+  const a = new ExtensionSync({
+    hostId: "a", file: join(root, "manual-stop.json"), local: () => [], validate: validateExtension,
+    watch: driver.watch, schedule: driver.schedule,
+    peers: () => [{ id: "b", extensions: async () => ({ hostId: "b", now: 0, entries: [] }), notify: async () => { pushes++; } }],
+  });
+  a.start(join(root, "extensions.json"));
+  driver.emit("extensions.json");
+  assert.equal(driver.tasks[0]!.delay, 500, "the default debounce is unchanged");
+  a.stop();
+  driver.flush();
+  assert.equal(pushes, 0);
+  a.start(join(root, "extensions.json"));
+  assert.equal(driver.starts(), 2);
+  a.stop();
+  assert.equal(driver.closes(), 2);
 });

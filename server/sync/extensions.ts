@@ -1,4 +1,4 @@
-import { readFileSync, statSync, watch, type FSWatcher } from "node:fs";
+import { readFileSync, statSync, watch } from "node:fs";
 import { basename, dirname } from "node:path";
 import type { ExtensionEntry } from "../extensions";
 import { writeFileAtomic } from "./logins-stores";
@@ -35,6 +35,11 @@ export interface ExtensionPeer {
   notify(list: ExtensionList): Promise<void>;
 }
 
+export interface ExtensionWatch {
+  close(): void;
+  on(event: "error", listener: (error: Error) => void): unknown;
+}
+
 export interface ExtensionSyncOptions {
   hostId: string;
   /** `<state root>/mesh-extensions.json`: the peers' last lists. */
@@ -48,6 +53,10 @@ export interface ExtensionSyncOptions {
   peerIds?: () => readonly string[];
   enabled?: () => boolean;
   now?: () => number;
+  /** Defaults to the native directory watcher; injectable for in-process tests. */
+  watch?: (directory: string, listener: (event: string, filename: string | Buffer | null) => void) => ExtensionWatch;
+  /** Schedule one debounce, returning its cancellation function. */
+  schedule?: (callback: () => void, delayMs: number) => () => void;
 }
 
 type Stored = Record<string, { at: number; entries: ExtensionEntry[] }>;
@@ -147,8 +156,8 @@ export class ExtensionSync {
     await Promise.all((this.opts.peers?.() ?? []).map((p) => p.notify(list).catch(() => {})));
   }
 
-  private watcher: FSWatcher | null = null;
-  private debounce: NodeJS.Timeout | undefined;
+  private watcher: ExtensionWatch | null = null;
+  private cancelDebounce: (() => void) | undefined;
 
   /**
    * Watch this host's manifest (its folder: editors and installers replace files) and push the
@@ -158,11 +167,16 @@ export class ExtensionSync {
     if (this.watcher) return;
     const name = basename(manifestPath);
     try {
-      this.watcher = watch(dirname(manifestPath), { persistent: false }, (_e, f) => {
+      const watchDirectory = this.opts.watch ?? ((directory, listener) => watch(directory, { persistent: false }, listener));
+      const schedule = this.opts.schedule ?? ((callback, delayMs) => {
+        const timer = setTimeout(callback, delayMs);
+        timer.unref?.();
+        return () => clearTimeout(timer);
+      });
+      this.watcher = watchDirectory(dirname(manifestPath), (_e, f) => {
         if (f !== null && f !== name) return;
-        clearTimeout(this.debounce);
-        this.debounce = setTimeout(() => void this.notifyAll(), debounceMs);
-        this.debounce.unref?.();
+        this.cancelDebounce?.();
+        this.cancelDebounce = schedule(() => void this.notifyAll(), debounceMs);
       });
       this.watcher.on("error", () => {});
     } catch {
@@ -173,7 +187,8 @@ export class ExtensionSync {
   stop(): void {
     this.watcher?.close();
     this.watcher = null;
-    clearTimeout(this.debounce);
+    this.cancelDebounce?.();
+    this.cancelDebounce = undefined;
   }
 
   async syncAll(): Promise<void> {

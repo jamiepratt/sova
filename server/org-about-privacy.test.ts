@@ -29,7 +29,7 @@ const po = await import("./project-overseer");
 const reconcile = await import("./reconcile");
 const decisions = await import("./decisions");
 const overseer = await import("./overseer");
-const { acquireChat, disposeAllChats, disposeHeldChat } = await import("./chat-manager");
+const { acquireChat, disposeAllChats, getModelRuntime } = await import("./chat-manager");
 const { readView, viewForToken } = await import("./share/hub");
 const { createShareApp } = await import("./share/routes");
 const { listSessions } = await import("./sessions-index");
@@ -56,10 +56,6 @@ after(async () => {
 
 // ---- a stub model on each runtime: records every request, replies "ok" -----------------------------------
 
-const STUB = {
-  id: "stub", name: "stub", api: "stub", provider: "stub", baseUrl: "http://127.0.0.1:9", reasoning: false, input: ["text"],
-  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 100_000, maxTokens: 1000,
-};
 const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
 type Chat = Awaited<ReturnType<typeof acquireChat>>;
 /** Every request each session's model got, by session path, as sent (system prompt, messages, tools). */
@@ -74,7 +70,11 @@ async function stubbedChat(path: string): Promise<Chat> {
   if (stubbed.has(s)) return chat;
   stubbed.add(s);
   s._modelRuntime.hasConfiguredAuth = () => true;
-  s.agent.state.model = STUB;
+  // Use an actual registry identity, not the unauthenticated open's unknown/unknown placeholder:
+  // coding sessions inherit it. Only the fake auth and recording stream below ever run it.
+  const fixtureModel = (await getModelRuntime()).getModel("openai", "gpt-4o");
+  assert.ok(fixtureModel, "the fixture model is in pi's registry");
+  s.agent.state.model = fixtureModel;
   s.agent.getApiKey = async () => "stub";
   s.agent.streamFunction = async (_m: unknown, context: unknown) => {
     sent.set(path, [...(sent.get(path) ?? []), JSON.stringify(context)]);
@@ -289,8 +289,8 @@ describe("the About text reaches the project overseer's prompt and nothing else"
     const p = store.projectOverseerPaths(project.id);
     addTodo({ text: "Add a CSV export" }, p.todos, p.ideas);
     const todo = readTodos(p.todos).todos.at(-1)!;
-    // The overseer's runtime runs the stub model, which a coding session would inherit: close it first.
-    await disposeHeldChat((await po.ensureProjectOverseer(project.id)).path, "closed by the test");
+    // The overseer stays held on its fake stream. Disposing it here would let an automatic look
+    // reopen it without the fake, while its real catalog identity is safe for the build to inherit.
     const made = await po.codeItem(project.id, { todoId: todo.id });
     assert.equal(made.notPrompted, undefined, "its first prompt was sent");
     await piSession(await acquireChat(made.path)).waitForIdle();
