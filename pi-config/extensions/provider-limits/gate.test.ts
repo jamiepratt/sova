@@ -116,6 +116,41 @@ test("stopping while waiting leaves the queue at once", async () => {
 	held!.release();
 });
 
+test("a stop inside the wait notification removes the queued request before subscribing or polling", async (t) => {
+	const dir = tmpAgent();
+	setLimits(dir, { zai: 1 });
+	const held = await acquireSlot("zai", { agentDir: dir, kind: "interactive", sessionId: "held" });
+	assert.ok(held);
+	const ac = new AbortController();
+	const waits: (WaitInfo | null)[] = [];
+	const pollMs = 321_987;
+	const originalTimeout = globalThis.setTimeout;
+	// Make the forbidden path fail synchronously, not after a wall-clock timeout. The
+	// occupied slot ensures the callback is a genuine queue notification, not a dispatch.
+	t.mock.method(globalThis, "setTimeout", ((fn: any, ms?: number, ...args: any[]) => {
+		assert.notEqual(ms, pollMs, "an already-aborted wait must not schedule its next poll");
+		return originalTimeout(fn, ms, ...args);
+	}) as typeof setTimeout);
+	try {
+		await assert.rejects(acquireSlot("zai", {
+			agentDir: dir, kind: "interactive", sessionId: "stopped", signal: ac.signal, pollMs,
+			onWait(info) {
+				waits.push(info);
+				if (info) {
+					assert.equal(files(dir, "zai", "wants").length, 1);
+					ac.abort();
+				} else assert.equal(files(dir, "zai", "wants").length, 0, "cleanup precedes wait-cleared");
+			},
+		}), AbortedWhileWaiting);
+		assert.deepEqual(waits, [{ provider: "zai", inUse: 1, limit: 1, lowered: false }, null]);
+		assert.equal(files(dir, "zai", "wants").length, 0);
+		assert.equal(files(dir, "zai", "slots").length, 1, "the stopped request never takes or releases the held slot");
+	} finally {
+		held.release();
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+});
+
 test("stale: a dead process's slot, or one not refreshed for 30 s, is freed by the next reader", async () => {
 	const dir = tmpAgent();
 	setLimits(dir, { zai: 1 });

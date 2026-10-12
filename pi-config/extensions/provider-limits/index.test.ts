@@ -18,18 +18,37 @@ const slots = (dir: string, key: string) => {
 };
 
 function fakePi() {
-	const configs = new Map<string, { api?: string; streamSimple?: any }>();
+	const configs = new Map<string, any>();
+	const native = new Map<string, any>();
+	const providers = new Map<string, any>();
 	const registered: string[] = [];
 	return {
 		configs,
 		registered,
+		native,
+		providers,
 		pi: {
-			registerProvider(name: string, config: any) {
+			registerProvider(name: any, config?: any) {
+				if (typeof name !== "string") {
+					registered.push(name.id);
+					native.set(name.id, name);
+					providers.set(name.id, name);
+					configs.delete(name.id);
+					return;
+				}
 				registered.push(name);
+				native.delete(name);
 				configs.set(name, { ...configs.get(name), ...config });
 			},
 		},
-		registry: (models: any[]) => ({ getAll: () => models, getRegisteredProviderConfig: (p: string) => configs.get(p) as any }),
+		registry: (models: any[]) => ({
+			getAll: () => models,
+			getRegisteredProviderConfig: (p: string) => configs.get(p),
+			getRegisteredNativeProvider: (p: string) => native.get(p),
+			getProvider: (p: string) => providers.get(p) ?? (models.some(m => m.provider === p) ? {
+				streamSimple: configs.get(p)?.streamSimple ?? (() => { throw new Error("unused fixture stream"); }),
+			} : undefined),
+		}),
 	};
 }
 
@@ -69,4 +88,103 @@ test("the claude-code limit wraps the stream the claude-code extension registere
 	assert.deepEqual(events.map((e: any) => e.type), ["error"], "passed through once, not re-queued");
 	assert.equal(slots(dir, "claude-code"), 0);
 	assert.deepEqual(applyGates(f.pi, reg, () => dir), [], "its own gated stream is never wrapped twice");
+});
+
+for (const reason of ["stop", "error", "aborted"] as const) {
+	test(`configured provider runs under one slot and releases on ${reason}`, async () => {
+		const dir = tmpAgent();
+		try {
+			writeProviderLimits(dir, { version: 1, limits: { fixture: 1 } });
+			const f = fakePi();
+			let calls = 0;
+			const source = { streamSimple(m: any, _context: any, options: any) {
+				assert.equal(this, source, "captured provider retains its receiver");
+				assert.equal(options.apiKey, "offline-key");
+				assert.equal(slots(dir, "fixture"), 1);
+				calls++;
+				const stream = createAssistantMessageEventStream();
+				queueMicrotask(() => {
+					const message = { role: "assistant", content: [], api: m.api, provider: m.provider,
+						model: m.id, usage: {} as any, stopReason: reason, timestamp: 0 } as any;
+					stream.push(reason === "stop" ? { type: "done", reason, message } : { type: "error", reason, error: message });
+					stream.end();
+				});
+				return stream;
+			} };
+			f.providers.set("fixture", source);
+			const reg = f.registry([model("fixture", "openai-completions")]);
+			assert.deepEqual(applyGates(f.pi, reg, () => dir), ["fixture"]);
+			assert.deepEqual(applyGates(f.pi, reg, () => dir), []);
+			for await (const _event of f.configs.get("fixture").streamSimple(model("fixture", "openai-completions"), { messages: [] }, { apiKey: "offline-key" })) { /* consume */ }
+			assert.equal(calls, 1);
+			assert.equal(slots(dir, "fixture"), 0);
+		} finally { fs.rmSync(dir, { recursive: true, force: true }); }
+	});
+}
+
+test("legacy registration retains name, endpoint, auth and models, and its stream receiver", async () => {
+	const dir = tmpAgent();
+	try {
+		writeProviderLimits(dir, { version: 1, limits: { fixture: 1 } });
+		const f = fakePi();
+		const config = { api: "openai-completions", name: "Fixture", baseUrl: "https://example.invalid", apiKey: "offline-key",
+			models: [model("fixture", "openai-completions")],
+			streamSimple(this: any, m: any) {
+				assert.equal(this, config);
+				assert.equal(slots(dir, "fixture"), 1);
+				const stream = createAssistantMessageEventStream();
+				queueMicrotask(() => { stream.push({ type: "error", reason: "aborted", error: {
+					role: "assistant", content: [], api: m.api, provider: m.provider, model: m.id,
+					usage: {} as any, stopReason: "aborted", timestamp: 0,
+				} }); stream.end(); });
+				return stream;
+			} };
+		f.configs.set("fixture", config);
+		applyGates(f.pi, f.registry(config.models), () => dir);
+		const gated = f.configs.get("fixture");
+		for (const key of ["name", "baseUrl", "apiKey", "models"]) assert.equal(gated[key], (config as any)[key]);
+		for await (const _event of gated.streamSimple(config.models[0], { messages: [] })) { /* consume */ }
+		assert.equal(slots(dir, "fixture"), 0);
+	} finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("native overload retains frozen class provider catalog, auth and all method receivers", async () => {
+	const dir = tmpAgent();
+	try {
+		writeProviderLimits(dir, { version: 1, limits: { fixture: 1 } });
+		const f = fakePi();
+		class Native {
+			#models = [model("fixture", "openai-completions")];
+			id = "fixture";
+			auth = { apiKey: { resolve: () => ({ apiKey: "offline-key" }) } };
+			get name() { return this.#models[0].provider; }
+			getModels() { return this.#models; }
+			getAllModels() { return this.#models; }
+			filterModels() { return this.#models; }
+			stream() { return this.#models; }
+			cancelDeferred() { return this.#models; }
+			streamSimple = (m: any) => {
+				assert.equal(slots(dir, "fixture"), 1);
+				const stream = createAssistantMessageEventStream();
+				queueMicrotask(() => { stream.push({ type: "error", reason: "aborted", error: {
+					role: "assistant", content: [], api: m.api, provider: m.provider, model: m.id,
+					usage: {} as any, stopReason: "aborted", timestamp: 0,
+				} }); stream.end(); });
+				return stream;
+			};
+		}
+		const original = Object.freeze(new Native());
+		f.native.set("fixture", original); f.providers.set("fixture", original);
+		const reg = f.registry(original.getModels());
+		assert.deepEqual(applyGates(f.pi, reg, () => dir), ["fixture"]);
+		const wrapped = f.native.get("fixture");
+		assert.ok(wrapped, "config overload would delete the native provider");
+		assert.equal(wrapped.name, original.name); assert.equal(wrapped.auth, original.auth);
+		for (const method of ["getModels", "getAllModels", "filterModels", "stream", "cancelDeferred"]) {
+			assert.equal(wrapped[method](), original.getModels(), `${method} keeps private receiver`);
+		}
+		assert.deepEqual(applyGates(f.pi, reg, () => dir), []);
+		for await (const _event of wrapped.streamSimple(original.getModels()[0], { messages: [] })) { /* consume */ }
+		assert.equal(slots(dir, "fixture"), 0);
+	} finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });

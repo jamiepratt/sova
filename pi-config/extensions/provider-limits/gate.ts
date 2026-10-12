@@ -536,6 +536,9 @@ export async function acquireSlot(provider: string, opts: AcquireOptions): Promi
 				reported = key;
 				opts.onWait?.(info);
 			}
+			// A wait reporter can stop the turn synchronously. Its abort event has already
+			// fired, so do not subscribe after it and leave cleanup waiting for the poll.
+			if (opts.signal?.aborted) throw new AbortedWhileWaiting(provider);
 			await new Promise<void>((resolve) => {
 				const t = setTimeout(done, opts.pollMs ?? POLL_MS);
 				function done() {

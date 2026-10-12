@@ -13,7 +13,7 @@
  * request waits, its status bar says so.
  */
 import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { getApiProvider, type Api, type Model } from "@earendil-works/pi-ai";
+import type { Api, Model, Provider } from "@earendil-works/pi-ai";
 import { WORKER_ROLE_DISCOVER_EVENT, WORKER_ROLE_EVENT } from "../mode/events.ts";
 import { limitsInEffect, registerSession, unregisterSession, validProviderId, waitingText, type RequestKind } from "./gate.ts";
 import { gateStreamSimple, type StreamSimple } from "./stream.ts";
@@ -29,6 +29,26 @@ type Gated = StreamSimple & { [GATED]?: string };
 interface Registry {
 	getAll(): Model<Api>[];
 	getRegisteredProviderConfig(provider: string): { api?: Api; streamSimple?: StreamSimple } | undefined;
+	getProvider(provider: string): Provider | undefined;
+	getRegisteredNativeProvider(provider: string): Provider | undefined;
+}
+
+/** Keep native metadata, auth and every capability, including class methods with private state. */
+function gatedNativeProvider(native: Provider, gated: Gated): Provider {
+	// Use a fresh target: a frozen provider's non-writable streamSimple cannot be overridden by
+	// a proxy over the original object. Other reads and methods keep the original receiver.
+	const target = Object.create(native) as Provider;
+	Object.defineProperty(target, "streamSimple", { value: gated, enumerable: true });
+	const methods = new Map<PropertyKey, unknown>();
+	return new Proxy(target, {
+		get(_target, key) {
+			if (key === "streamSimple") return gated;
+			const value = Reflect.get(native, key, native);
+			if (typeof value !== "function") return value;
+			if (!methods.has(key)) methods.set(key, value.bind(native));
+			return methods.get(key);
+		},
+	});
 }
 
 /** The pi provider a limit key gates. */
@@ -58,23 +78,24 @@ export function applyGates(pi: Pick<ExtensionAPI, "registerProvider">, registry:
 		} catch {
 			existing = undefined;
 		}
-		if ((existing?.streamSimple as Gated | undefined)?.[GATED]) continue;
+		const native = registry.getRegisteredNativeProvider(provider);
+		if ((existing?.streamSimple as Gated | undefined)?.[GATED] || (native?.streamSimple as Gated | undefined)?.[GATED]) continue;
 		models ??= registry.getAll();
 		const own = models.filter((m) => m.provider === provider);
 		const api = existing?.api ?? mainApi(own);
 		if (!api || own.length === 0) continue;
-		const inner: StreamSimple =
-			existing?.streamSimple && existing.api === api
-				? existing.streamSimple
-				: (model, context, options) => {
-						const streams = getApiProvider(model.api);
-						if (!streams) throw new Error(`No API provider registered for api: ${model.api}`);
-						return streams.streamSimple(model, context, options);
-					};
+		// Capture the configured provider before registration. Calling registry.streamSimple from
+		// inside the gate would dispatch back into this wrapper and recursively claim slots.
+		const resolved = registry.getProvider(provider);
+		if (!resolved) continue;
+		const inner: StreamSimple = existing?.streamSimple && existing.api === api
+			? existing.streamSimple.bind(existing)
+			: resolved.streamSimple.bind(resolved);
 		const gated: Gated = gateStreamSimple(inner, { provider: limitKey, agentDir, retry: limitKey !== CLAUDE_LIMIT_KEY });
 		gated[GATED] = limitKey;
 		try {
-			pi.registerProvider(provider, { api, streamSimple: gated });
+			if (native) pi.registerProvider(gatedNativeProvider(native, gated));
+			else pi.registerProvider(provider, { api, streamSimple: gated });
 			done.push(provider);
 		} catch {
 			// A provider pi won't let us re-register stays ungated rather than broken.
