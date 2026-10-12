@@ -346,7 +346,8 @@ export const PI_QUIRKS: readonly PiQuirk[] = [
     relies:
       "agent.state.tools is the set the next request declares, with the descriptions a prepareLoadout hook gave them (getAllTools() keeps the registry's); the private _hiddenDeclarations names the declarations requests leave out; a tool's sourceInfo.path is `builtin:<name>` for pi's own, `<inline:<name>>` for an extension factory, else the extension's file.",
     pi: ["Agent.state.tools", "AgentSession._hiddenDeclarations", "AgentSession._applyToolLoadout", "AgentSession.getAllTools", "SourceInfo.path"],
-    where: [{ file: SESSION, symbol: "PiHarnessSession.declaredTools" }, { file: SESSION, symbol: "toolSource" }],
+    where: [{ file: SESSION, symbol: "PiHarnessSession.declaredTools" }, { file: SESSION, symbol: "toolSource" },
+      { file: "server/harness/pi/native-compaction-extension.ts", symbol: "installNativeCompactionHooks" }],
     canary: "P22 declared-tools: agent.state.tools is the declared set with the loadout's descriptions, _hiddenDeclarations what requests leave out, sourceInfo.path names the source",
     retireWhen: "pi offers a public read of the declared tools as a request will send them",
   },
@@ -360,6 +361,18 @@ export const PI_QUIRKS: readonly PiQuirk[] = [
     where: [{ file: "pi-config/extensions/link/index.ts", symbol: "join" }],
     canary: "P23 turn-end-loadout: a tool registered at turn_end is declared in the next request of the same run, beside the steered message; one registered at turn_start is not",
     retireWhen: "pi offers a documented hook for changing the tool set before a run's next request",
+  },
+  {
+    id: "P24",
+    name: "native-request-witness",
+    kind: "monkey-patch",
+    relies:
+      "After bindExtensions, replacing agent.transformContext wraps extension context handlers and pi's forced-prompt/hidden-tool projections before provider conversion, and streamFunction is read for that request. A retained ExtensionContext.model getter reads the current session model, not its session_start snapshot.",
+    pi: ["Agent.transformContext", "Agent.streamFunction", "AgentSession.bindExtensions", "AgentSession._installAgentForcedPromptProjection", "AgentSession._installHiddenDeclarationsProjection", "ExtensionContext.model"],
+    where: [{ file: "server/harness/pi/native-compaction-extension.ts", symbol: "installNativeCompactionHooks" },
+      { file: "server/harness/pi/native-compaction-extension.ts", symbol: "createNativeCompactionExtension" }],
+    canary: "P24 native-request-witness: an after-bind transform sees final context projections before streaming and retained context reads the current model",
+    retireWhen: "pi offers a documented final request-context hook with live session identity",
   },
   {
     id: "T1",

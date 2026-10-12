@@ -57,8 +57,9 @@ Paths in "Where" are under `server/`.
 | P19 rebuild-prompt | semantic | `PiHarnessSession.refreshSystemPrompt` (harness/pi/session.ts), `LivePrompt.rebase` (overseer.ts) | `AgentSession.setActiveToolsByName`, `AgentSession._rebuildSystemPrompt`, `DefaultResourceLoader.appendSystemPromptOverride` | pi adds a public refreshSystemPrompt(), or re-reads the parts at each run |
 | P20 model-restore-gate | semantic | `recordedModelForEmptyBranch` (harness/pi/open.ts), `modelForSessionOpen` (harness/pi/open.ts), `legacyClaudeModelForOpen` (harness/pi/open.ts) | `createAgentSession`, `SessionManager.buildSessionContext` | pi restores a recorded model on any branch |
 | P21 codemode-definition | semantic | `captureCodemode` (harness/pi/codemode.ts), `scriptRegistry` (harness/pi/codemode.ts) | `createCodemodeExtension`, `ExtensionAPI.registerTool`, `ExtensionContext.modelRegistry`, `ExtensionToolContext.executeTool` | pi exports the codemode tool definition and a model hook for scripts |
-| P22 declared-tools | private-read | `PiHarnessSession.declaredTools` (harness/pi/session.ts), `toolSource` (harness/pi/session.ts) | `Agent.state.tools`, `AgentSession._hiddenDeclarations`, `AgentSession._applyToolLoadout`, `AgentSession.getAllTools`, `SourceInfo.path` | pi offers a public read of the declared tools as a request will send them |
+| P22 declared-tools | private-read | `PiHarnessSession.declaredTools` (harness/pi/session.ts), `toolSource` (harness/pi/session.ts), `installNativeCompactionHooks` (harness/pi/native-compaction-extension.ts) | `Agent.state.tools`, `AgentSession._hiddenDeclarations`, `AgentSession._applyToolLoadout`, `AgentSession.getAllTools`, `SourceInfo.path` | pi offers a public read of the declared tools as a request will send them |
 | P23 turn-end-loadout | ordering | `join` (pi-config/extensions/link/index.ts) | `agentLoop`, `AgentSession._installAgentNextTurnRefresh`, `AgentSession._preparePromptAndToolLoadout`, `ExtensionAPI.registerTool` | pi offers a documented hook for changing the tool set before a run's next request |
+| P24 native-request-witness | monkey-patch | `installNativeCompactionHooks` (harness/pi/native-compaction-extension.ts), `createNativeCompactionExtension` (harness/pi/native-compaction-extension.ts) | `Agent.transformContext`, `Agent.streamFunction`, `AgentSession.bindExtensions`, `AgentSession._installAgentForcedPromptProjection`, `AgentSession._installHiddenDeclarationsProjection`, `ExtensionContext.model` | pi offers a documented final request-context hook with live session identity |
 | T1 scripted-model (test-only) | private-write | `ScriptedModel.attach` (harness/pi/testing/scripted-model.ts) | `AgentSession._modelRuntime`, `Agent.getApiKey`, `Agent.streamFunction` | pi offers a public test model hook |
 
 ## What each one relies on
@@ -202,6 +203,15 @@ Canary: `P22 declared-tools: agent.state.tools is the declared set with the load
 Within one run pi (1.0.3, `pi-agent-core` `agent-loop.js`) emits `turn_end` (an extension's handler runs in the `finishTurn` boundary before it), then polls `getSteeringMessages`, then runs `prepareNextTurn` — `AgentSession._installAgentNextTurnRefresh` builds the next request's prompt and tool loadout there from `getActiveToolNames()` (`_preparePromptAndToolLoadout`) — and only then emits `turn_start`. So a tool an extension registers in a `turn_end` handler is declared (`toolsAdded`) in the very next request of the same run, the one that carries a message steered during the step; a tool registered at `turn_start` waits for the request after. The `link` extension turns the link tools on at `turn_end` for a session linked mid-run, so the partner's steered message arrives with the tools to answer it (§mesh.links/tools, §mesh.links/delivery).
 
 Canary: `P23 turn-end-loadout: a tool registered at turn_end is declared in the next request of the same run, beside the steered message; one registered at turn_start is not`.
+
+### P24 native-request-witness
+
+After `bindExtensions`, replacing `agent.transformContext` wraps extension context handlers and
+pi's forced-prompt and hidden-tool projections before provider conversion. `streamFunction` is read
+for that request. A retained `ExtensionContext.model` getter reads the current session model rather
+than the model at `session_start`; native compatibility checks must not freeze that getter.
+
+Canary: `P24 native-request-witness: an after-bind transform sees final context projections before streaming and retained context reads the current model`.
 
 ### T1 scripted-model (test-only)
 

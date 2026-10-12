@@ -9,6 +9,7 @@ import type { PiModelRuntime } from "./extension-types";
 import { hostedRuntimes } from "./host-registry";
 import { PiHarnessSession } from "./session";
 import { bindPiExtensions } from "./ui-bridge";
+import { installNativeCompactionHooks } from "./native-compaction-extension";
 
 export class PiChatHost {
   /** The driving session: the runtime's current session, looked up at each call. */
@@ -25,8 +26,9 @@ export class PiChatHost {
   }
 
   /** The current session's extensions, bound to the chat's dialogs (ui-bridge.ts). */
-  bindExtensions(dialogs: DialogBridge, onError: (extensionPath: string, error: string) => void): Promise<void> {
-    return bindPiExtensions(this.runtime.session, dialogs, onError);
+  async bindExtensions(dialogs: DialogBridge, onError: (extensionPath: string, error: string) => void): Promise<void> {
+    await bindPiExtensions(this.runtime.session, dialogs, onError);
+    installNativeCompactionHooks(this.runtime.session);
   }
 
   /** The model runtime this chat's sessions resolve models and context windows against (models.ts). */

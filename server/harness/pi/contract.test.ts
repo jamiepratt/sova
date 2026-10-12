@@ -5,7 +5,7 @@
 // faux provider, registered through the public ModelRuntime API: no network, no private fields.
 // C1 the session manager's append* methods (the entry union), C2 the custom entry's line, C3 the event
 // names and fields chat-manager's bind() reads, C5 image content as prompt/steer take and store it.
-// P1-P23 and T1 are the quirk canaries (QUIRKS.md, quirks.ts): each asserts that a pi behaviour a Sova
+// P1-P24 and T1 are the quirk canaries (QUIRKS.md, quirks.ts): each asserts that a pi behaviour a Sova
 // workaround or assumption rests on still holds. Their turns run on testing/scripted-model.ts (a held
 // reply makes the mid-turn windows deterministic). When one fails, triage it by its QUIRKS.md row.
 import assert from "node:assert/strict";
@@ -774,6 +774,42 @@ return w + ":" + r.stopReason;`;
     assert.ok(JSON.stringify((model.calls[1]!.context as { messages: unknown[] }).messages).includes("steered while the tool ran"), "the request that carries the steered message");
     assert.ok(!second!.has("at_turn_start"), "registered at turn_start: too late for that request (fixed: pi builds the loadout after turn_start)");
     assert.ok(third!.has("at_turn_start"), "the control: it is declared in the request after");
+    session.dispose();
+  });
+
+  test("P24 native-request-witness: an after-bind transform sees final context projections before streaming and retained context reads the current model", async () => {
+    let retained: any;
+    const tools = (api: any) => {
+      pi.agent.createCodemodeExtension({ mode: "only" })(api);
+      api.registerTool({ name: "echo", label: "echo", description: "Echo", parameters: Type.Object({}), execute: async () => ({ content: [], details: {} }) });
+      api.on("session_start", (_e: any, ctx: any) => { retained = ctx; });
+      api.on("before_agent_start", (event: any) => { event.systemPromptOptions.forceSystemPrompt = "FORCED FINAL INSTRUCTIONS"; });
+      api.on("context", (event: any) => ({ messages: event.messages.filter((m: any) => m.role !== "compactionSummary") }));
+    };
+    const { session, model, sm, runtime } = await quirkSession({ extensions: [{ name: "contract-native-witness", factory: tools } as never] });
+    assert.ok(retained, "binding dispatches session_start before the after-bind installer");
+    assert.equal(retained.model.id, "faux-1");
+    await session.setModel(runtime.getModel("faux", "faux-2")!);
+    assert.equal(retained.model.id, "faux-2", "retained context reads the current model through a live getter");
+    session.setActiveToolsByName(["echo", "codemode"]);
+    const kept = sm.appendMessage({ role: "user", content: "kept tail", timestamp: 1 });
+    sm.appendCompaction("portable checkpoint", kept, 100, {}, true);
+    const priorTransform = session.agent.transformContext;
+    const witnessed: any[][] = [];
+    session.agent.transformContext = async (messages, signal) => {
+      const final = priorTransform ? await priorTransform(messages, signal) : messages;
+      witnessed.push(final);
+      return final;
+    };
+    model.reply({ text: "ok" });
+    await session.prompt("go");
+    assert.equal(witnessed.length, 1);
+    assert.ok(!witnessed[0]!.some(m => m.role === "compactionSummary"), "the final witness observes the context hook removing the real summary");
+    const systems = witnessed[0]!.filter(m => m.role === "system");
+    assert.equal(systems.length, 1, "forced prompt projection already collapsed the head");
+    assert.equal(systems[0].content, "FORCED FINAL INSTRUCTIONS");
+    assert.deepEqual(systems.flatMap(m => m.toolsAdded ?? []).map(t => t.name), ["codemode"], "hidden echo was filtered before the witness");
+    assert.ok(!JSON.stringify(model.calls[0]!.context).includes("portable checkpoint"), "the provider stream reads the witnessed context, not the untransformed projection");
     session.dispose();
   });
 

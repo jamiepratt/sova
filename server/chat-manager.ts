@@ -48,6 +48,7 @@ import { codemodeFactory } from "./harness/pi/codemode";
 import { claimSessionSlot, holdingSlot } from "./provider-limits";
 import { VIS_CHECK_TOOL, visCheckExtension, type VisCheckHost } from "./vis-check";
 import { MEMORY_COMPACTION_REFUSAL, memoryExtension, type MemoryHost } from "./harness/pi/memory";
+import { createNativeCompactionExtension, type NativeCompactionHost } from "./harness/pi/native-compaction-extension";
 import { playbookExtension } from "./harness/pi/playbook";
 import { playbookHost } from "./playbook-host";
 import { ChatMemory } from "./memory/chat";
@@ -1760,6 +1761,17 @@ class ChatSession {
     return this.memory;
   }
 
+  nativeCompactionHost(): NativeCompactionHost {
+    return {
+      memoryOn: () => this.memory.choice().on,
+      assertOwned: () => {
+        if (this.disposed) throw new Error("Chat disposed");
+        assertNotLive(this.path);
+        this.assertNoForeignWrites();
+      },
+    };
+  }
+
   /** Whether this chat's mode menu offers memory: an ordinary chat whose runtime has the engine (never the
       Overseer, whose switch is its own, nor a session that refuses mode switches). */
   memoryOffered(): boolean {
@@ -3358,6 +3370,7 @@ async function openSession(path: string, onDisposed: () => void): Promise<ChatSe
               visCheckExtension(() => (visHost.chat && !visHost.chat.disposed ? visHost.chat.visCheckHost() : null)),
               // The memory minor mode's engine (§chat/memory): idle until memory is turned on.
               memoryExtension(() => (visHost.chat && !visHost.chat.disposed ? visHost.chat.memoryHost() : null)),
+              createNativeCompactionExtension({ host: () => visHost.chat?.nativeCompactionHost() ?? null }),
               // playbook_read, once a schedule's fire delivered a playbook here (§chat.schedules/playbook-read).
               playbookExtension(playbookHost),
               // project_verbs: its own worktrees' running instances (server/project-services/tools.ts).
