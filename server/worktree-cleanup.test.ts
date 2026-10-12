@@ -85,12 +85,14 @@ before(() => {
   tracker("idl", wt("idle"));
   mkdirSync(join(wt("liverec"), ".agent", "sessions", "live"), { recursive: true });
   writeFileSync(join(wt("liverec"), ".agent", "sessions", "live", `p${process.pid}-x.json`), JSON.stringify({ session: { pid: process.pid } }));
-  // The real /proc scan, taken once and shared (a scan reads every fd of every process this user has,
-  // seconds each on a busy host), plus a process inside wt-proc as the scan reads one: a real child
-  // whose cwd is there is worktree-cleanup.integration.test.ts.
-  let scan: ReturnType<typeof c.scanProcesses> | null = null;
+  // Complete process observations for the refusal rules, independent of the host. The actual
+  // reader finding a child by its cwd is worktree-cleanup.integration.test.ts.
+  const processes: c.ProcFacts[] = [
+    { pid: 100, command: "sleep", paths: [wt("proc")] },
+    { pid: 200, command: "node", paths: [join(root, "elsewhere", "log")] },
+  ];
   c.configureCleanup({
-    processes: () => (scan ??= c.scanProcesses().then((ps) => [...ps, { pid: process.ppid, command: "sleep", paths: [wt("proc")] }])),
+    processes: async () => processes,
     summary: async (p) => sessions.find((s) => s.path === p) ?? null,
     sessionFiles: async () => [...new Set([...sessions.map((s) => s.path), join(root, "sessions", "01a1026f-c64e-70a4.jsonl"), HOME_SESSION()])],
     readBranch: async (p) => (reads.branch.push(p), branches.get(p) ?? []),
@@ -144,7 +146,7 @@ test("the dry run names what goes and why the rest stays", async () => {
   assert.equal(stays.get(wt("live-tui")), "Session “session tui” tracks it and is open in a TUI.");
   assert.equal(stays.get(wt("running")), "Session “session run” tracks it and is running.");
   assert.equal(stays.get(wt("sandboxed")), "Session “session sbx” tracks it and has its sandbox on.");
-  assert.match(stays.get(wt("proc")) ?? "", /^A running process is inside it: sleep \(\d+\)\.$/);
+  assert.equal(stays.get(wt("proc")), "A running process is inside it: sleep (100).");
   assert.equal(stays.get(wt("liverec")), `A live session under its .agent: ${process.pid}.`);
   // A dry run touches nothing.
   for (const n of ["merged", "squash", "empty", "idle"]) assert.ok(existsSync(wt(n)));
