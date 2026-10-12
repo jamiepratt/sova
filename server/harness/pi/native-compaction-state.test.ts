@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
   compatibleNative, latestNativeCompaction, NATIVE_RETAINED_MAX_BYTES, NATIVE_STATE_MAX_BYTES,
-  parseNativeCompaction, replayNativePrefix, retainNativeUsers, type NativeCompactionState,
+  parseNativeCompaction, replayNativePrefix, retainNativeUsers, snapshotNativeInput, type NativeCompactionState,
 } from './native-compaction-state';
 
 const user = (text: string) => ({ role: 'user', content: [{ type: 'input_text', text }] });
@@ -43,6 +43,23 @@ test('native details are versioned, bounded JSON with a single complete final ar
   parsed.replacementHistory[1]!.encrypted_content = 'changed';
   assert.equal(valid.replacementHistory[1]!.encrypted_content, 'opaque');
 });
+test('request input snapshots detach data and decline outer or nested accessors without evaluating them', () => {
+  const assistant = { type: 'message', role: 'assistant', id: 'assistant-id', phase: undefined, content: [{ type: 'output_text', text: 'Assistant tail' }] };
+  const payload = { input: [{ ...user('Portable summary'), id: undefined }, assistant] };
+  const snapshot = snapshotNativeInput(payload)!;
+  assert.deepEqual(snapshot, JSON.parse(JSON.stringify(payload.input)), 'optional object fields match API wire serialization');
+  payload.input[0]!.content[0]!.text = 'Changed in place';
+  assert.deepEqual(snapshot, [user('Portable summary'), { type: 'message', role: 'assistant', id: 'assistant-id', content: [{ type: 'output_text', text: 'Assistant tail' }] }]);
+  assert.equal(snapshotNativeInput({ input: [undefined] }), undefined, 'undefined array entries remain inadmissible');
+  let reads = 0;
+  const accessor = () => { reads++; return payload.input; };
+  const nested = user('Portable summary');
+  Object.defineProperty(nested.content[0], 'text', { enumerable: true, get: () => { reads++; return 'Portable summary'; } });
+  for (const input of [{ get input() { return accessor(); } }, { input: [nested] }]) {
+    assert.equal(snapshotNativeInput(input), undefined);
+  }
+  assert.equal(reads, 0);
+});
 test('latest effective active checkpoint is authoritative, even if textual or malformed', () => {
   const checkpoint = { type: 'compaction', details: { sovaNativeCompaction: fixture() } };
   assert.deepEqual(latestNativeCompaction([checkpoint, { type: 'message' }]), fixture());
@@ -69,8 +86,8 @@ test('retention preserves chronological eligible user items and counts image/Uni
 test('replay changes exactly one whole summary slot and leaves all canonical tail items untouched', () => {
   const summary = user('Readable native checkpoint heading\nreal portable summary');
   const tail = [user('current input'), { type: 'function_call_output', call_id: 'call', output: 'result' },
-    user('hidden handoff note'), { role: 'assistant', content: [{ type: 'output_text', text: 'foreign-provider reply' }] }];
-  const payload = { store: false, input: [summary, ...tail], tools: [{ type: 'function', name: 'tool' }] };
+    user('hidden handoff note'), { role: 'assistant', phase: undefined, content: [{ type: 'output_text', text: 'foreign-provider reply' }] }];
+  const payload = { store: false, input: [{ ...summary, id: undefined }, ...tail], tools: [{ type: 'function', name: 'tool' }] };
   const before = structuredClone(payload);
   const patched = replayNativePrefix(payload, summary, fixture(), { summaryPresent: true }) as typeof payload;
   assert.deepEqual(patched.input, [...fixture().replacementHistory, ...tail]);

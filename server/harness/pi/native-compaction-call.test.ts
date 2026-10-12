@@ -138,6 +138,108 @@ describe('injectable native compaction call', () => {
     assert.deepEqual(state, priorState());
   });
 
+  it('preserves caller settings edits and replays an unchanged unique prior input', async () => {
+    for (const inPlace of [false, true]) {
+      const summary = user('Portable checkpoint');
+      const tail = user('new prefix user');
+      const raw = { ...payload(), input: [summary, tail] };
+      const state = priorState();
+      const f = fixture({ rawPayload: raw });
+      let callbackCount = 0;
+      const settings = { instructions: 'Caller instructions', tools: [{ type: 'function', name: 'caller_tool' }], temperature: 0.4 };
+      const result = await callNativeCompaction({ registry: f.registry, model, context,
+        priorPrefix: { state, identity, expectedSummaryItem: summary, summaryPresent: true },
+        options: { onPayload(body, actualModel) {
+          callbackCount++;
+          assert.equal(actualModel, model);
+          assert.deepEqual((body as typeof raw).input, [summary, tail], 'caller sees generated portable input, not the artifact');
+          if (inPlace) { Object.assign(body as object, settings); return undefined; }
+          return { ...(body as object), ...settings };
+        } },
+      });
+      assert.equal(callbackCount, 1);
+      assert.equal(f.calls, 1);
+      assert.deepEqual(f.generated, { ...raw, ...settings, store: false,
+        input: [...state.replacementHistory, tail, { type: 'compaction_trigger' }],
+      });
+      assert.deepEqual(result.replacementHistory, [user('retained prior user'), tail, artifact]);
+    }
+  });
+
+  it('replays genuine serialized input with SDK optional undefined object fields', async () => {
+    const summary = { ...user('Portable checkpoint'), id: undefined };
+    const assistant = { type: 'message', role: 'assistant', id: 'assistant_fixture', phase: undefined,
+      content: [{ type: 'output_text', text: 'Prior assistant' }] };
+    const tail = user('new prefix user');
+    const raw = { ...payload(), input: [summary, assistant, tail] };
+    const state = priorState();
+    const f = fixture({ rawPayload: raw });
+    let callbacks = 0;
+    const result = await callNativeCompaction({ registry: f.registry, model, context,
+      priorPrefix: { state, identity, expectedSummaryItem: summary, summaryPresent: true },
+      options: { onPayload(body) {
+        callbacks++;
+        // An omitted optional object property changes no serialized input.
+        (body as { input: Record<string, unknown>[] }).input[1]!.optional = undefined;
+        return undefined;
+      } },
+    });
+    assert.equal(callbacks, 1);
+    assert.deepEqual(f.generated, { ...raw, store: false, input: [...state.replacementHistory,
+      JSON.parse(JSON.stringify(assistant)), tail, { type: 'compaction_trigger' }],
+    });
+    assert.deepEqual(result.replacementHistory, [user('retained prior user'), tail, artifact]);
+  });
+
+  it('keeps caller-transformed portable input when provenance collides or any input item changes', async () => {
+    const summary = user('Portable checkpoint');
+    const tail = user('new prefix user');
+    const mutations = [
+      // Two equal slots cannot become provenance after removing the genuine one.
+      { name: 'remove genuine, leave quote', initial: [summary, summary, tail], mutate: (items: unknown[]) => { items.splice(0, 1); } },
+      { name: 'move summary', initial: [summary, tail], mutate: (items: unknown[]) => { items.reverse(); } },
+      { name: 'rewrite summary', initial: [summary, tail], mutate: (items: unknown[]) => { (items[0] as ReturnType<typeof user>).content[0]!.text = 'Caller summary'; } },
+      { name: 'remove summary', initial: [summary, tail], mutate: (items: unknown[]) => { items.splice(0, 1); } },
+      { name: 'add quote', initial: [summary, tail], mutate: (items: unknown[]) => { items.push(structuredClone(summary)); } },
+      { name: 'add unrelated user', initial: [summary, tail], mutate: (items: unknown[]) => { items.push(user('Caller extra user')); } },
+      { name: 'rewrite tail only', initial: [summary, tail], mutate: (items: unknown[]) => { (items[1] as ReturnType<typeof user>).content[0]!.text = 'Caller tail'; } },
+    ];
+    for (const mutation of mutations) for (const inPlace of [false, true]) {
+      const raw = { ...payload(), input: structuredClone(mutation.initial) };
+      const f = fixture({ rawPayload: raw });
+      let callbackCount = 0;
+      let changedInput: unknown;
+      const result = await callNativeCompaction({ registry: f.registry, model, context,
+        priorPrefix: { state: priorState(), identity, expectedSummaryItem: summary, summaryPresent: true },
+        options: { onPayload(body) {
+          callbackCount++;
+          const changed = inPlace ? body as typeof raw : structuredClone(body) as typeof raw;
+          mutation.mutate(changed.input);
+          changedInput = structuredClone(changed.input);
+          return inPlace ? undefined : changed;
+        } },
+      });
+      assert.equal(callbackCount, 1, mutation.name);
+      assert.equal(f.calls, 1, mutation.name);
+      assert.deepEqual(f.generated, { ...raw, store: false,
+        input: [...changedInput as unknown[], { type: 'compaction_trigger' }],
+      }, `${mutation.name}, inPlace=${inPlace}: retain exactly caller-transformed portable input`);
+      assert.ok(!JSON.stringify(f.generated).includes('cmp_old'), mutation.name);
+      assert.deepEqual(result.replacementHistory, [...changedInput as unknown[], artifact], mutation.name);
+    }
+  });
+
+  it('rejects caller-produced input accessors without evaluating them while checking provenance', async () => {
+    const summary = user('Portable checkpoint');
+    const f = fixture({ rawPayload: { ...payload(), input: [summary] }, swallowCallbacks: true });
+    let reads = 0;
+    await rejectCall({ registry: f.registry, model, context,
+      priorPrefix: { state: priorState(), identity, expectedSummaryItem: summary, summaryPresent: true },
+      options: { onPayload: () => ({ get input() { reads++; return [summary]; } }) },
+    }, 'invalid-payload');
+    assert.equal(reads, 0);
+  });
+
   it('keeps portable input on absent provenance, a surviving quote, missing/ambiguous slot or incompatibility', async () => {
     const summary = user('Portable checkpoint');
     for (const scenario of [

@@ -34,7 +34,7 @@ function bytes(value: unknown): number {
   } catch { return Infinity; }
 }
 /** Reject non-JSON input, cycles and nested request controls, not just the top-level type. */
-function durableJson(value: unknown, seen = new Set<object>(), depth = 0, budget = { nodes: 100_000 }): boolean {
+function durableJson(value: unknown, seen = new Set<object>(), depth = 0, budget = { nodes: 100_000 }, omitUndefinedProperties = false): boolean {
   if (--budget.nodes < 0 || depth > 64) return false;
   if (value === null || typeof value === 'string' || typeof value === 'boolean') return true;
   if (typeof value === 'number') return Number.isFinite(value);
@@ -47,10 +47,21 @@ function durableJson(value: unknown, seen = new Set<object>(), depth = 0, budget
     const property = Object.getOwnPropertyDescriptor(value, key)!;
     if (!property.enumerable || !('value' in property)) return false;
     if (key === 'type' && property.value === 'compaction_trigger') return false;
-    return durableJson(property.value, seen, depth + 1, budget);
+    return (omitUndefinedProperties && !Array.isArray(value) && property.value === undefined) ||
+      durableJson(property.value, seen, depth + 1, budget, omitUndefinedProperties);
   });
   seen.delete(value);
   return valid;
+}
+/** Request-local provenance snapshot; an accessor is not a stable serialized slot. */
+export function snapshotNativeInput(payload: unknown): unknown[] | undefined {
+  if (!record(payload)) return undefined;
+  const descriptor = Object.getOwnPropertyDescriptor(payload, 'input');
+  if (!descriptor || !('value' in descriptor) || !Array.isArray(descriptor.value) ||
+      !durableJson(descriptor.value, new Set(), 0, { nodes: 100_000 }, true)) return undefined;
+  // Generated request items may have optional undefined object fields. Compare the
+  // data actually serialized on the wire, without invoking getters or toJSON hooks.
+  return JSON.parse(JSON.stringify(descriptor.value)) as unknown[];
 }
 function userItem(item: unknown): item is NativeItem {
   return record(item) && item.role === 'user' && (item.type === undefined || item.type === 'message') &&
@@ -120,15 +131,17 @@ export function replayNativePrefix(
   payload: unknown, expectedSummaryItem: unknown, state: NativeCompactionState,
   provenance?: { summaryPresent: boolean },
 ): unknown {
-  if (!provenance?.summaryPresent || !record(payload) || !Array.isArray(payload.input) || !userItem(expectedSummaryItem) ||
-      !parseNativeCompaction(state)) return payload;
+  if (!provenance?.summaryPresent || !record(payload) || !parseNativeCompaction(state)) return payload;
+  const input = snapshotNativeInput(payload);
+  const expected = snapshotNativeInput({ input: [expectedSummaryItem] })?.[0];
+  if (!input || !userItem(expected)) return payload;
   const matches: number[] = [];
-  payload.input.forEach((item, index) => { if (isDeepStrictEqual(item, expectedSummaryItem)) matches.push(index); });
+  input.forEach((item, index) => { if (isDeepStrictEqual(item, expected)) matches.push(index); });
   if (matches.length !== 1) return payload;
   const index = matches[0]!;
   return { ...payload, input: [
-    ...payload.input.slice(0, index),
+    ...(payload.input as unknown[]).slice(0, index),
     ...JSON.parse(JSON.stringify(state.replacementHistory)) as NativeItem[],
-    ...payload.input.slice(index + 1),
+    ...(payload.input as unknown[]).slice(index + 1),
   ] };
 }

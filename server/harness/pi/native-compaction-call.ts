@@ -1,10 +1,11 @@
+import { isDeepStrictEqual } from 'node:util';
 import type { ModelRegistry } from '@earendil-works/pi-coding-agent';
 import {
   createNativeCompactionEventCollector, NativeCompactionEventError,
   type NativeCompactionEventFailure,
 } from './native-compaction-events';
 import {
-  compatibleNative, parseNativeCompaction, replayNativePrefix, retainNativeUsers,
+  compatibleNative, parseNativeCompaction, replayNativePrefix, retainNativeUsers, snapshotNativeInput,
   type NativeIdentity, type NativeItem,
 } from './native-compaction-state';
 
@@ -141,14 +142,24 @@ export async function callNativeCompaction(input: NativeCompactionCallInput): Pr
         active();
         if (payloadSeen) throw new NativeCompactionCallError('invalid-payload');
         payloadSeen = true;
-        const transformed = await input.options?.onPayload?.(raw, model);
-        active();
-        let payload = checkedPayload(transformed === undefined ? raw : transformed, maxBytes);
         const prior = input.priorPrefix;
         const state = prior ? parseNativeCompaction(prior.state) : null;
+        // Witness the serialized slot before the caller can remove the genuine summary
+        // and leave an identical user quote. Snapshot the entire input to catch movement,
+        // replacement and in-place edits even when the callback returns undefined.
+        const inputBefore = prior ? snapshotNativeInput(raw) : undefined;
+        const expectedSummaryItem = prior ? snapshotNativeInput({ input: [prior.expectedSummaryItem] })?.[0] : undefined;
+        const uniqueBefore = prior?.summaryPresent === true && inputBefore !== undefined &&
+          inputBefore.filter(item => isDeepStrictEqual(item, expectedSummaryItem)).length === 1;
+        const transformed = await input.options?.onPayload?.(raw, model);
+        active();
+        const transformedPayload = transformed === undefined ? raw : transformed;
+        const inputUnchanged = inputBefore !== undefined &&
+          isDeepStrictEqual(inputBefore, snapshotNativeInput(transformedPayload));
+        let payload = checkedPayload(transformedPayload, maxBytes);
         if (prior && state && compatibleNative(state, prior.identity)) {
-          payload = checkedPayload(replayNativePrefix(payload, prior.expectedSummaryItem, state,
-            { summaryPresent: prior.summaryPresent === true }), maxBytes);
+          payload = checkedPayload(replayNativePrefix(payload, expectedSummaryItem, state,
+            { summaryPresent: uniqueBefore && inputUnchanged }), maxBytes);
         }
         // Preserve generated instructions/tools/reasoning/cache fields, changing only control fields.
         const patched = checkedPayload(payload, maxBytes);
