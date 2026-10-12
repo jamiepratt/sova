@@ -3,13 +3,13 @@
 // project cwd handled on /api/files's terms. Uses a throwaway PI_CODING_AGENT_DIR in the OS temp
 // dir; ~/.pi is never read or written. The shipped playbooks/ folder is read, never modified.
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { after, test } from "node:test";
 
-const agentDir = mkdtempSync(join(tmpdir(), "sova-playbooks-test-"));
+const agentDir = realpathSync(mkdtempSync(join(tmpdir(), "sova-playbooks-test-")));
 process.env.PI_CODING_AGENT_DIR = agentDir; // before the modules below compute their paths
 const { isPlaybookId, listPlaybooks, parseFrontmatter, PROJECT_PLAYBOOK_DIRS, readProjectPlaybook, userPlaybooksDir } = await import("./playbooks");
 const PROJECT_PLAYBOOKS = PROJECT_PLAYBOOK_DIRS[1];

@@ -7,7 +7,7 @@
 // throwaway dir, removed after.
 import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, test } from "node:test";
@@ -31,7 +31,8 @@ import { type ResolvedPolicy, writeDenial } from "../../pi-config/extensions/san
 import { prescan } from "../link-sandbox";
 import { inProcessTar, makeTree, refusal, snapshotTree, spoolMembers } from "./links-transfer-test-fixtures";
 
-const tmp = mkdtempSync(join(tmpdir(), "sova-links-transfer-test-"));
+// Policy checks resolve existing ancestors; fixture paths must use the same spelling.
+const tmp = realpathSync(mkdtempSync(join(tmpdir(), "sova-links-transfer-test-")));
 after(() => rmSync(tmp, { recursive: true, force: true }));
 const home = join(tmp, "home");
 const work = join(home, "work");

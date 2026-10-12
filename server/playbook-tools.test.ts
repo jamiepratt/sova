@@ -3,7 +3,7 @@
 // by `..`, an absolute path or a link; the session's sandbox refuses what it hides; each result
 // records the version it read; a session with no delivered playbook reads nothing.
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
@@ -13,7 +13,7 @@ import { renderBlock } from "../shared/playbook-delivery";
 import { deliveredHint, hasDelivery, playbookReadTool } from "./playbook-tools";
 import { PlaybookVersions, shaOf } from "./playbook-versions";
 
-const dir = mkdtempSync(join(tmpdir(), "sova-playbook-tools-"));
+const dir = realpathSync(mkdtempSync(join(tmpdir(), "sova-playbook-tools-")));
 after(() => rmSync(dir, { recursive: true, force: true }));
 const pb = join(dir, "p", ".sova", "playbooks", "merge-round");
 mkdirSync(join(pb, "references"), { recursive: true });

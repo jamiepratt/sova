@@ -3,24 +3,24 @@
 // idle session reads as idle; the live-record cases drop a presence file with an alive foreign
 // pid (1) into the temp live dir and remove it after.
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after, test } from "node:test";
 import { piSession } from "./harness/pi/testing/handle";
 
-const dir = mkdtempSync(join(tmpdir(), "sova-fork-routes-"));
+const dir = realpathSync(mkdtempSync(join(tmpdir(), "sova-fork-routes-")));
 process.env.PI_CODING_AGENT_DIR = dir;
+// paths caches the sessions root at import time; it must already exist to resolve symlinks.
+const sessionsDir = join(dir, "sessions", "--tmp-fork-routes--");
+mkdirSync(sessionsDir, { recursive: true });
+const liveDir = join(dir, "sessions", "live");
+mkdirSync(liveDir, { recursive: true });
 const { buildApp } = await import("./app");
 const { app } = buildApp({ extensionEntriesOf: async () => [] });
 const { canonicalPath } = await import("./paths");
 const { FORK_CACHE_ENTRY } = await import("../pi-config/extensions/subagents/fork/cache.ts");
 const { acquireChat, disposeAllChats } = await import("./chat-manager");
-
-const sessionsDir = join(dir, "sessions", "--tmp-fork-routes--");
-mkdirSync(sessionsDir, { recursive: true });
-const liveDir = join(dir, "sessions", "live");
-mkdirSync(liveDir, { recursive: true });
 
 after(async () => {
   await disposeAllChats();

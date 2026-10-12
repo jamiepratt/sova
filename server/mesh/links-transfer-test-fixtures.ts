@@ -1,6 +1,7 @@
 // Tests: trees, spools and refusals for links-transfer.test.ts, links-transfer.integration.test.ts and
 // links.test.ts. inProcessTar stands in for the host's tar (packing ustar, extracting it), so spools,
-// pulls and pre-scans run in-process; the real tar: the integration file.
+// pulls and pre-scans run in-process; GNU long-link headers preserve large targets. Real tar:
+// the integration file.
 import assert from "node:assert/strict";
 import type { ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
@@ -58,7 +59,7 @@ export async function refusal(p: Promise<unknown> | (() => unknown)): Promise<Tr
 const octal = (n: number, width: number) => `${n.toString(8).padStart(width - 1, "0")}\0`;
 
 /** One ustar header; a name past 100 bytes is split into prefix and name at a slash. */
-function header(path: string, type: "0" | "2" | "5", size: number, mode: number, linkname = ""): Buffer {
+function header(path: string, type: "0" | "2" | "5" | "K", size: number, mode: number, linkname = ""): Buffer {
   let name = path;
   let prefix = "";
   if (Buffer.byteLength(path) > 100) {
@@ -92,8 +93,15 @@ function tarOf(parent: string, members: readonly string[]): Buffer {
   for (const m of members) {
     const p = join(parent, m);
     const st = lstatSync(p);
-    if (st.isSymbolicLink()) parts.push(header(m, "2", 0, 0o777, readlinkSync(p)));
-    else if (st.isDirectory()) parts.push(header(`${m}/`, "5", 0, st.mode & 0o7777));
+    if (st.isSymbolicLink()) {
+      const target = readlinkSync(p);
+      if (Buffer.byteLength(target) > 100) {
+        // GNU tar's long-link record applies to the next member, not a separate file.
+        const data = Buffer.from(`${target}\0`);
+        parts.push(header("././@LongLink", "K", data.length, 0o644), data, Buffer.alloc((512 - (data.length % 512)) % 512));
+        parts.push(header(m, "2", 0, 0o777));
+      } else parts.push(header(m, "2", 0, 0o777, target));
+    } else if (st.isDirectory()) parts.push(header(`${m}/`, "5", 0, st.mode & 0o7777));
     else {
       const data = readFileSync(p);
       parts.push(header(m, "0", data.length, st.mode & 0o7777), data, Buffer.alloc((512 - (data.length % 512)) % 512));
@@ -107,6 +115,7 @@ const field = (h: Buffer, at: number, len: number) => h.subarray(at, at + len).t
 
 /** Every member of `archive` (concatenated ustar archives, zero blocks skipped) written under `dest`. */
 function untar(archive: Buffer, dest: string): void {
+  let longLink: string | undefined;
   for (let at = 0; at + 512 <= archive.length; ) {
     const h = archive.subarray(at, at + 512);
     at += 512;
@@ -116,11 +125,18 @@ function untar(archive: Buffer, dest: string): void {
     const size = parseInt(field(h, 124, 12) || "0", 8);
     const mode = parseInt(field(h, 100, 8) || "644", 8);
     const type = String.fromCharCode(h[156]!);
+    if (type === "K") {
+      longLink = field(archive.subarray(at, at + size), 0, size);
+      at += Math.ceil(size / 512) * 512;
+      continue;
+    }
+    const linkname = longLink ?? field(h, 157, 100);
+    longLink = undefined;
     const p = join(dest, name);
     if (type === "5") mkdirSync(p, { recursive: true, mode });
     else if (type === "2") {
       rmSync(p, { force: true });
-      symlinkSync(field(h, 157, 100), p);
+      symlinkSync(linkname, p);
     } else {
       rmSync(p, { force: true });
       writeFileSync(p, archive.subarray(at, at + size), { mode });
@@ -131,7 +147,8 @@ function untar(archive: Buffer, dest: string): void {
 
 /**
  * `tar` in-process for Spools and Pulls (their `tar` option): `-cf -` packs the NUL-separated
- * members its stdin names as ustar on its stdout; `-x -f -` extracts its stdin under `-C`. A
+ * members its stdin names as ustar (plus GNU long-link records) on its stdout; `-x -f -`
+ * extracts its stdin under `-C`. A
  * failure (a member gone, a directory it can't write) is a line on stderr and exit 2, as with tar.
  */
 export const inProcessTar: TarRunner = (args) => {

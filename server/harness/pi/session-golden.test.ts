@@ -44,7 +44,15 @@ const GOLDEN = join(import.meta.dirname, "golden/session");
 const RECORD = process.env.SOVA_GOLDEN_RECORD;
 
 // A fixed base, not tmpdir(): the goldens' token estimate counts this path's length, so it must not move with TMPDIR.
-const root = realpathSync(mkdtempSync("/tmp/sova-session-golden-"));
+// Canonical /tmp is /private/tmp on macOS. The root appears in the prompt four times (cwd,
+// README, docs, examples), so those extra 8 characters otherwise add 8 estimated tokens.
+// Shorten the fixture prefix, not the prompt or its estimate, to preserve the original path length.
+const tempBase = realpathSync("/tmp");
+const rootLength = "/tmp/sova-session-golden-XXXXXX".length;
+const prefixLength = rootLength - tempBase.length - 1 - 6; // separator and mkdtemp's suffix
+assert.ok(prefixLength >= "sova-".length, "canonical /tmp leaves room for a unique fixture prefix");
+const root = realpathSync(mkdtempSync(join(tempBase, "sova-session-golden-".slice(0, prefixLength))));
+assert.equal(root.length, rootLength, "prompt-facing fixture paths keep the goldens' original length");
 process.on("exit", () => rmSync(root, { recursive: true, force: true }));
 const agentDir = join(root, "agent");
 process.env.PI_CODING_AGENT_DIR = agentDir;
