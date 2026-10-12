@@ -50,7 +50,7 @@ before(() => {
     return { code: 3 };
   };
   engine = new ProjectEngine(host.deps());
-  engine.conformer = conformer(engine);
+  engine.conformer = conformer(engine, undefined, host.rssOf);
 });
 
 after(async () => {
@@ -102,7 +102,7 @@ function onSystemd(hookRun: { code: number; stderr: string }, journal: string[])
     return { code: 0, stdout: "", stderr: "" };
   };
   const e = new ProjectEngine(host.deps({ driver: new SystemdDriver(exec) }));
-  e.conformer = conformer(e);
+  e.conformer = conformer(e, undefined, host.rssOf);
   return { e, runs };
 }
 

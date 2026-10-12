@@ -87,6 +87,7 @@ class Memory {
   constructor(
     private readonly engine: ProjectEngine,
     private readonly services: string[],
+    private readonly readRss: typeof rssOf,
   ) {}
   watch(label: "A" | "B", id: string): void {
     this.watched.push({ label, id });
@@ -98,7 +99,7 @@ class Memory {
     for (const w of this.watched) {
       let sum: number | null = null;
       for (const svc of this.services) {
-        const rss = rssOf(this.engine.driver.pids(this.engine.unitOf(w.id, svc)));
+        const rss = this.readRss(this.engine.driver.pids(this.engine.unitOf(w.id, svc)));
         if (rss === null) continue;
         sum = (sum ?? 0) + rss;
         this.max(`${w.label}\0${svc}`, rss);
@@ -189,7 +190,8 @@ function writeStamp(project: string, defHash: string, stamp: Stamp): void {
   renameSync(tmp, file);
 }
 
-export function conformer(engine: ProjectEngine, git: Git = realGit) {
+/** The memory observer defaults to the host reader; in-process fixtures supply their host's reader. */
+export function conformer(engine: ProjectEngine, git: Git = realGit, readRss: typeof rssOf = rssOf) {
   return async (body: unknown, caller: Caller): Promise<VerbResult> => {
     const base = (over: Partial<VerbResult>): VerbResult =>
       ordered({
@@ -238,7 +240,7 @@ export function conformer(engine: ProjectEngine, git: Git = realGit) {
       const lock = tryLock(instanceLockFile(project, "\0conform"));
       if ("heldBy" in lock) throw new VerbFailure("busy", `a conformance run is already running on this project (pid ${lock.heldBy})`);
       try {
-        const report = await runSuite(engine, git, { project, ref, commit, def, defHash }, caller);
+        const report = await runSuite(engine, git, { project, ref, commit, def, defHash }, caller, readRss);
         const file = join(conformDir(), `${slugOf(project)}-${defHash.slice(7, 19)}-${Date.now()}.json`);
         mkdirSync(conformDir(), { recursive: true });
         writeFileSync(file, `${JSON.stringify({ ...report.report, project, commit, envelopes: report.envelopes }, null, 2)}\n`);
@@ -292,12 +294,13 @@ async function runSuite(
   git: Git,
   t: { project: string; ref: string; commit: string; def: ProjectDef; defHash: string },
   caller: Caller,
+  readRss: typeof rssOf,
 ): Promise<{ report: ConformReport; envelopes: { label: string; result: VerbResult }[]; failure: { id: string; code: ErrorCode; detail: string } | null }> {
   const runId = randomBytes(3).toString("hex");
   const confCaller: Caller = { kind: "conform", id: `${runId}:${callerTag(caller)}` };
   const s = new Suite(engine, confCaller);
   const { project, commit, def } = t;
-  const memory = new Memory(engine, def.services.filter((x) => x.scope === "checkout" && x.cmd && !x.container).map((x) => x.name));
+  const memory = new Memory(engine, def.services.filter((x) => x.scope === "checkout" && x.cmd && !x.container).map((x) => x.name), readRss);
   const [slotA, slotB] = scratchSlots(def);
   const branchA = `sova/conform-${runId}-a`;
   const branchB = `sova/conform-${runId}-b`;

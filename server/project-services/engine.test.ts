@@ -9,6 +9,7 @@ import { SelectedDriver } from "./adapters";
 import { DetachedDriver, SystemdDriver } from "./drivers";
 import { ProjectEngine, type Caller } from "./engine";
 import { FakeHost } from "./fake-host";
+import type { ProcTable } from "./proctable";
 import { readRegistry } from "./store";
 import { defHashOf } from "./def-hash";
 import { parseDefinition } from "../../shared/project-contract";
@@ -129,8 +130,25 @@ test("up starts shared services first, waits for readiness; again leaves the sam
   assert.deepEqual(again.services.map((s) => s.pid), up.services.map((s) => s.pid));
   const st = shaped(await engine.run("status", { instance: a.instance }, op));
   assert.deepEqual(st.services.map((s) => [s.name, s.state]), [["bus", "ready"], ["web", "ready"]]);
+  assert.deepEqual(st.services.map((s) => s.rssBytes), [1_048_576, 1_048_576], "the fake host observes memory without reading host processes");
   const all = shaped(await engine.run("status", { project }, op));
   assert.deepEqual(all.instances?.map((i) => [i.instance, i.state]), [[a.instance, "running"]]);
+});
+
+test("status samples the injected RSS observer with each unit's exact pids and carries its bytes", async () => {
+  const current = shaped(await engine.run("status", { instance: a.instance }, op));
+  const pids = current.services.map((s) => host.driver.pids(s.unit!));
+  const bytes = new Map([[pids[0]![0]!, 13_579], [pids[1]![0]!, 24_680]]);
+  const calls: number[][] = [];
+  const observed = new ProjectEngine(host.deps({ rssOf: (ps) => {
+    calls.push([...ps]);
+    return bytes.get(ps[0]!) ?? null;
+  } }));
+  const st = shaped(await observed.run("status", { instance: a.instance }, op));
+  assert.deepEqual(calls, pids, "each service's unit, never the observer's own pid or another service's");
+  assert.deepEqual(st.services.map((s) => [s.pid, s.rssBytes]), [[pids[0]![0], 13_579], [pids[1]![0], 24_680]]);
+  const unknown = new ProjectEngine(host.deps({ rssOf: () => null }));
+  assert.ok((await unknown.run("status", { instance: a.instance }, op)).services.every((s) => !("rssBytes" in s)), "unknown memory is omitted, never invented as zero");
 });
 
 test("a second verb on a busy instance answers busy at once", async () => {
@@ -233,16 +251,17 @@ test("with no supervisor reachable, process verbs are unsupported and change not
 });
 
 test("doctor and status name the supervisor adapter and why; a reserved adapter leaves process verbs unsupported", async () => {
-  // The detached driver is only asked whether it is available: nothing starts.
-  const sel = new ProjectEngine(host.deps({ driver: new SelectedDriver({ env: { SOVA_PROJECT_NO_SYSTEMD: "1" }, detached: () => new DetachedDriver() }) }));
-  const doc = shaped(await sel.run("doctor", { project }, op));
-  const sup = doc.checks!.find((c) => c.id === "supervisor")!;
-  assert.equal(sup.ok, true);
-  // Linux reads /proc; macOS's ps has no session column (§app.project-services/supervisor).
-  const reads = process.platform === "linux" ? "\\/proc" : "ps \\(no session ids: process trees and groups\\)";
-  assert.match(sup.detail, new RegExp(`^detached: detached sessions, processes read from ${reads}; chosen because systemd treated as absent \\(SOVA_PROJECT_NO_SYSTEMD=1\\)$`));
-  const st = shaped(await sel.run("status", { project }, op));
-  assert.deepEqual(st.checks, [sup], "status carries the same check");
+  // Observe both injected table shapes on every platform: no host ps probe and nothing starts.
+  for (const [kind, sessions, reads] of [["procfs", true, "/proc"], ["ps", false, "ps (no session ids: process trees and groups)"]] as const) {
+    const table: ProcTable = { kind, sessions, list: () => [], get: () => null, startOf: () => null };
+    const sel = new ProjectEngine(host.deps({ driver: new SelectedDriver({ env: { SOVA_PROJECT_NO_SYSTEMD: "1" }, detached: () => new DetachedDriver(undefined, { table }) }) }));
+    const doc = shaped(await sel.run("doctor", { project }, op));
+    const sup = doc.checks!.find((c) => c.id === "supervisor")!;
+    assert.equal(sup.ok, true);
+    assert.equal(sup.detail, `detached: detached sessions, processes read from ${reads}; chosen because systemd treated as absent (SOVA_PROJECT_NO_SYSTEMD=1)`);
+    const st = shaped(await sel.run("status", { project }, op));
+    assert.deepEqual(st.checks, [sup], "status carries the injected table's same check");
+  }
   const launchd = new ProjectEngine(host.deps({ driver: new SelectedDriver({ env: { SOVA_PROJECT_DRIVER: "launchd" } }) }));
   const before = readRegistry().instances.length;
   const r = shaped(await launchd.run("up", { project, branch: "sova/launchd" }, op));

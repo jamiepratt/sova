@@ -19,6 +19,7 @@ import { readRegistry } from "./store";
 process.env.PI_CODING_AGENT_DIR = mkdtempSync(join(tmpdir(), "sova-conform-cleanup-agent-"));
 
 const op: Caller = { kind: "operator" };
+const host = new FakeHost();
 let parent = "";
 let project = "";
 let engine: ProjectEngine;
@@ -57,7 +58,6 @@ after(async () => {
 });
 
 before(() => {
-  const host = new FakeHost();
   // setup.mjs leaves an untracked file in its worktree, then fails; fail.mjs just fails.
   host.driver.once = (spec) => {
     if (spec.argv[1] === "setup.mjs") {
@@ -67,7 +67,7 @@ before(() => {
     return { code: spec.argv[1] === "fail.mjs" ? 2 : 0 };
   };
   engine = new ProjectEngine(host.deps());
-  engine.conformer = conformer(engine);
+  engine.conformer = conformer(engine, undefined, host.rssOf);
 });
 
 test("a setup that fails after writing into its worktree: no scratch worktree, folder or sova/conform-* branch is left", async () => {
@@ -87,9 +87,38 @@ test("a setup that fails cleanly: nothing is left either", async () => {
   assert.deepEqual(leftovers(), []);
 });
 
-test("a run that passes leaves nothing", async () => {
+test("a run that passes leaves nothing and samples its host's resident memory", async () => {
+  const observations: number[][] = [];
+  const readRss = (pids: number[]) => {
+    observations.push([...pids]);
+    return pids.length ? pids.length * 91_337 : null;
+  };
+  engine = new ProjectEngine(host.deps({ rssOf: readRss }));
+  engine.conformer = conformer(engine, undefined, readRss);
+  const starts: { unit: string; pids: number[] }[] = [];
+  const start = host.driver.start;
+  host.driver.start = async (spec) => {
+    await start.call(host.driver, spec);
+    starts.push({ unit: spec.unit, pids: host.driver.pids(spec.unit) });
+  };
   commitDef({ version: 1, slots: { cap: 1 }, services: { web: { cmd: ["node", "web.mjs"] } } });
-  const r = await engine.run("conform", { project }, op);
+  const r = await engine.run("conform", { project }, op).finally(() => { host.driver.start = start; });
   assert.equal(r.ok, true, JSON.stringify(r.conform?.checks.filter((c) => !c.ok)));
+  assert.deepEqual(r.conform?.memory?.instances, ["A", "B"].map((label) => ({
+    label,
+    peakBytes: 91_337,
+    steadyBytes: 91_337,
+    services: [{ name: "web", peakBytes: 91_337, steadyBytes: 91_337 }],
+  })), "both scratch instances use the injected reader, not the host's real RSS or the fixture's default");
+  const live = observations.filter((pids) => pids.length);
+  assert.ok(live.length > 0, "the reader actually sampled running services");
+  assert.ok(live.every((pids) => pids.length === 1 && pids[0]! > 5_000_000), "only the fake units' process ids reach the reader");
+  assert.equal(starts.length, 3, "the default reload starts A, B, then restarts A");
+  const [a, b, restartedA] = starts;
+  assert.notEqual(a!.unit, b!.unit, "A and B have distinct units");
+  assert.equal(restartedA!.unit, a!.unit, "apply restarts A's own unit");
+  assert.ok(starts.every((s) => s.pids.length === 1), "each started unit has one fake process");
+  assert.equal(new Set(starts.flatMap((s) => s.pids)).size, 3, "A's restart gets a new pid, distinct from A and B's original pids");
+  assert.deepEqual([...new Set(live.flat())].sort((a, b) => a - b), starts.flatMap((s) => s.pids).sort((a, b) => a - b), "the reader observes exactly A, B and the restarted A, using the driver's actual pids");
   assert.deepEqual(leftovers(), []);
 });

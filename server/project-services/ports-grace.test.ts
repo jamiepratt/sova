@@ -68,7 +68,7 @@ before(() => {
     return { ports: [http], late: late === null ? [] : [{ port: nrepl, ms: late! }] };
   };
   engine = new ProjectEngine(host.deps());
-  engine.conformer = conformer(engine);
+  engine.conformer = conformer(engine, undefined, host.rssOf);
 });
 
 after(() => {

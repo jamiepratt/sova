@@ -73,6 +73,13 @@ writeFileSync(
 mkdirSync(join(agentDir, "prompts"), { recursive: true });
 writeFileSync(join(agentDir, "prompts", "mk.md"), "---\ndescription: make a session\n---\nCreate one empty session titled $1.\n");
 
+const { ProjectEngine } = await import("./project-services/engine");
+const { FakeHost } = await import("./project-services/fake-host");
+const { configureProjectEngine, projectEngine } = await import("./project-services/routes");
+const serviceHost = new FakeHost();
+configureProjectEngine(() => new ProjectEngine(serviceHost.deps()));
+assert.equal(projectEngine().driver, serviceHost.driver, "project reads use the injected host, not the OS supervisor");
+
 const { acquireChat, disposeAllChats, heldChat } = await import("./chat-manager");
 const { parseModeRequest } = await import("./mode-state");
 const { SessionManager } = await import("@earendil-works/pi-coding-agent");

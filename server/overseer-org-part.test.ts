@@ -15,6 +15,13 @@ process.env.PI_CODING_AGENT_DIR = join(root, "agent");
 mkdirSync(join(root, "agent", "sessions", "live"), { recursive: true });
 process.env.SOVA_SHARE_PUBLIC_URL = "https://share.example.invalid";
 
+const { ProjectEngine } = await import("./project-services/engine");
+const { FakeHost } = await import("./project-services/fake-host");
+const { configureProjectEngine, projectEngine } = await import("./project-services/routes");
+const serviceHost = new FakeHost();
+configureProjectEngine(() => new ProjectEngine(serviceHost.deps()));
+assert.equal(projectEngine().driver, serviceHost.driver, "project reads use the injected host, not the OS supervisor");
+
 const orgs = await import("./orgs");
 const baton = await import("./baton");
 const po = await import("./project-overseer");

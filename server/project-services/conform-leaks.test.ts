@@ -45,8 +45,9 @@ before(async () => {
   git(["init", "-q", "-b", "main"]);
   git(["add", "-A"]);
   git(["commit", "-q", "-m", "fixture"]);
-  engine = new ProjectEngine(new FakeHost().deps());
-  engine.conformer = conformer(engine);
+  const host = new FakeHost();
+  engine = new ProjectEngine(host.deps());
+  engine.conformer = conformer(engine, undefined, host.rssOf);
   const real = engine.run.bind(engine);
   engine.run = async (verb, body, caller) => {
     if (midRun && caller.kind === "conform" && verb === "up") {

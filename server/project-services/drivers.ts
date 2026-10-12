@@ -290,14 +290,21 @@ export function cgroupPids(unit: string): number[] {
  * launchdAdoptedStatus reads it): never started, stopped or signalled here, whatever the driver.
  * `unit` is the whole name (`sova-runtime.service`).
  */
-export async function adoptedStatus(unit: string, exec: Exec = realExec, pidsOf: (unit: string) => number[] = cgroupPids, platform: NodeJS.Platform = process.platform): Promise<AdoptedStatus> {
-  if (platform === "darwin") return launchdAdoptedStatus(unit, exec);
+export async function adoptedStatus(
+  unit: string,
+  exec: Exec = realExec,
+  pidsOf: (unit: string) => number[] = cgroupPids,
+  platform: NodeJS.Platform = process.platform,
+  readRss: (pids: number[]) => number | null = rssOf,
+  treeOf: (pid: number) => number[] = (pid) => processTree(pid),
+): Promise<AdoptedStatus> {
+  if (platform === "darwin") return launchdAdoptedStatus(unit, exec, treeOf, undefined, readRss);
   const r = await exec("systemctl", ["--user", "show", unit, "--timestamp=unix", "--property=LoadState,ActiveState,SubState,MainPID,ExecMainStatus,Result,ActiveEnterTimestamp"], { timeoutMs: 5_000 });
   if (r.code !== 0) return { state: "missing", pid: null, startedAt: null, rssBytes: null, detail: `systemctl could not read ${unit}: ${r.stderr.trim() || `exit ${r.code}`}` };
   const st = parseShow(r.stdout);
   const enter = /^ActiveEnterTimestamp=(.*)$/m.exec(r.stdout)?.[1];
   const live = st.state === "active" || st.state === "activating";
-  return { ...st, startedAt: live ? parseEnterTimestamp(enter) : null, rssBytes: live ? rssOf(pidsOf(unit)) : null };
+  return { ...st, startedAt: live ? parseEnterTimestamp(enter) : null, rssBytes: live ? readRss(pidsOf(unit)) : null };
 }
 
 // ---- an adopted unit under launchd (macOS) -----------------------------------------------------
@@ -342,7 +349,13 @@ export function processTree(pid: number, table: ProcTable = hostProcTable()): nu
  * pid, when that process started (`ps -o etime=`), and its tree's resident memory. Not loaded is
  * `missing` with no detail (not-found); launchctl failing otherwise carries its message (unsupported).
  */
-export async function launchdAdoptedStatus(unit: string, exec: Exec = realExec, treeOf: (pid: number) => number[] = (pid) => processTree(pid), now = Date.now()): Promise<AdoptedStatus> {
+export async function launchdAdoptedStatus(
+  unit: string,
+  exec: Exec = realExec,
+  treeOf: (pid: number) => number[] = (pid) => processTree(pid),
+  now = Date.now(),
+  readRss: (pids: number[]) => number | null = rssOf,
+): Promise<AdoptedStatus> {
   const target = launchdTarget(unit);
   const r = await exec("launchctl", ["print", target], { timeoutMs: 5_000 });
   if (r.code !== 0) {
@@ -353,7 +366,7 @@ export async function launchdAdoptedStatus(unit: string, exec: Exec = realExec, 
   if (st.pid === null) return { ...st, startedAt: null, rssBytes: null };
   const ps = await exec("ps", ["-o", "etime=", "-p", String(st.pid)], { timeoutMs: 5_000 });
   const age = ps.code === 0 ? parseEtime(ps.stdout) : null;
-  return { ...st, startedAt: age !== null ? new Date(Math.floor(now / 1000) * 1000 - age * 1000).toISOString() : null, rssBytes: rssOf(treeOf(st.pid)) };
+  return { ...st, startedAt: age !== null ? new Date(Math.floor(now / 1000) * 1000 - age * 1000).toISOString() : null, rssBytes: readRss(treeOf(st.pid)) };
 }
 
 /** The pids of an adopted unit: its cgroup on Linux, the agent's process tree on macOS. */

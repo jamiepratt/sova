@@ -299,6 +299,8 @@ export interface EngineDeps {
   driver: Driver;
   git?: GitRun;
   portOwner?: (port: number) => PortOwner;
+  /** Resident bytes of a unit's processes (default: the host reader); tests fake them. */
+  rssOf?: (pids: number[]) => number | null;
   /** Run a container engine command (`docker rm -f …`); tests fake it. */
   containerExec?: (engine: string, args: string[]) => Promise<number>;
   /** Ask a container engine (`docker port …`, `inspect`, `ps`) and read its output; tests fake it. */
@@ -376,6 +378,7 @@ export class ProjectEngine {
   private readonly git: GitRun;
   /** Who listens on a port of this host (conform reads it too). */
   readonly portOwner: (port: number) => PortOwner;
+  private readonly rssOf: (pids: number[]) => number | null;
   private readonly containerExec: (engine: string, args: string[]) => Promise<number>;
   private readonly containerQuery: ContainerQuery;
   private readonly pollMs: number;
@@ -398,6 +401,7 @@ export class ProjectEngine {
     this.driver = deps.driver;
     this.git = deps.git ?? realGit;
     this.portOwner = deps.portOwner ?? ((p) => hostPortOwner(p));
+    this.rssOf = deps.rssOf ?? rssOf;
     this.containerExec =
       deps.containerExec ??
       ((engine, args) =>
@@ -1876,7 +1880,7 @@ export class ProjectEngine {
       if (st.state === "active" || st.state === "activating") {
         const p = await this.probe(def, sc, s, unit);
         // A process service's resident memory now (a container's lives in its engine, not its unit).
-        const rss = kind === "process" ? rssOf(this.driver.pids(unit)) : null;
+        const rss = kind === "process" ? this.rssOf(this.driver.pids(unit)) : null;
         out.push({ name: s.name, scope: s.scope, kind, state: p.ok ? "ready" : st.state === "activating" ? "starting" : "degraded", unit, pid: st.pid, ports, ready: p, ...(rss !== null ? { rssBytes: rss } : {}) });
       } else {
         const state = st.state === "failed" ? "failed" : this.heldElsewhere(sc, s, ports) ? "external" : "stopped";

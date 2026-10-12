@@ -18,6 +18,13 @@ process.env.PI_CODING_AGENT_DIR = agentDir;
 mkdirSync(join(agentDir, "sessions", "live"), { recursive: true });
 symlinkSync(resolve(import.meta.dirname, "..", "pi-config", "extensions"), join(agentDir, "extensions"));
 
+const { ProjectEngine } = await import("./project-services/engine");
+const { FakeHost } = await import("./project-services/fake-host");
+const { configureProjectEngine, projectEngine } = await import("./project-services/routes");
+const serviceHost = new FakeHost();
+configureProjectEngine(() => new ProjectEngine(serviceHost.deps()));
+assert.equal(projectEngine().driver, serviceHost.driver, "project reads use the injected host, not the OS supervisor");
+
 const orgs = await import("./orgs");
 const baton = await import("./baton");
 const po = await import("./project-overseer");

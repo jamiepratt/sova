@@ -24,11 +24,19 @@ test("an adopted unit's status: state, main pid, start time and memory, by one r
     calls.push([file, ...args]);
     return { code: 0, stdout: "LoadState=loaded\nActiveState=active\nSubState=running\nMainPID=4242\nExecMainStatus=0\nResult=success\nActiveEnterTimestamp=@1700000000\n", stderr: "" };
   };
-  const st = await adoptedStatus(UNIT, exec, () => [process.pid], "linux");
+  const memoryReads: number[][] = [];
+  const st = await adoptedStatus(UNIT, exec, (unit) => {
+    assert.equal(unit, UNIT);
+    return [4242, 4343];
+  }, "linux", (pids) => {
+    memoryReads.push([...pids]);
+    return 91_337;
+  });
   assert.equal(st.state, "active");
   assert.equal(st.pid, 4242);
   assert.equal(st.startedAt, "2023-11-14T22:13:20.000Z");
-  assert.ok(st.rssBytes && st.rssBytes > 0, "the unit's processes' resident memory");
+  assert.equal(st.rssBytes, 91_337, "the exact injected reading, not this test process's memory");
+  assert.deepEqual(memoryReads, [[4242, 4343]], "memory samples all the adopted unit's pids, not only MainPID");
   assert.equal(calls.length, 1);
   assert.deepEqual(calls[0]!.slice(0, 4), ["systemctl", "--user", "show", UNIT], "only ever show, by the unit's whole name");
   const gone = await adoptedStatus(UNIT, async () => ({ code: 0, stdout: "LoadState=not-found\nActiveState=inactive\n", stderr: "" }), () => [], "linux");
@@ -134,9 +142,19 @@ test("macOS: an adopted agent's status from launchctl print (state, pid, last ex
     calls.push([file, ...args]);
     return file === "launchctl" ? { code: 0, stdout: PRINT("running", 4242, "0"), stderr: "" } : { code: 0, stdout: "   05:00\n", stderr: "" };
   };
-  const st = await launchdAdoptedStatus(UNIT, exec, () => [process.pid], 1_700_000_000_000);
+  const memoryReads: number[][] = [];
+  const treeOf = (pid: number) => {
+    assert.equal(pid, 4242, "the tree is rooted at the launchd job's own pid, not a nested pid");
+    return [4242, 4545];
+  };
+  const readRss = (pids: number[]) => {
+    memoryReads.push([...pids]);
+    return 72_469;
+  };
+  const st = await launchdAdoptedStatus(UNIT, exec, treeOf, 1_700_000_000_000, readRss);
   assert.deepEqual([st.state, st.pid, st.startedAt], ["active", 4242, "2023-11-14T22:08:20.000Z"]);
-  assert.ok(st.rssBytes && st.rssBytes > 0, "the agent's process tree's resident memory");
+  assert.equal(st.rssBytes, 72_469, "the exact injected tree's reading, distinct from the systemd fixture");
+  assert.deepEqual(memoryReads, [[4242, 4545]], "memory samples the tree's pids");
   assert.deepEqual(calls[0], ["launchctl", "print", `gui/${process.getuid?.() ?? 0}/sova-gate-stand-in`], "print only, by the label");
   assert.deepEqual(calls[1], ["ps", "-o", "etime=", "-p", "4242"]);
   assert.equal(calls.length, 2, "nothing but reads");
@@ -145,7 +163,9 @@ test("macOS: an adopted agent's status from launchctl print (state, pid, last ex
   const broken = await launchdAdoptedStatus(UNIT, async () => ({ code: 127, stdout: "", stderr: "launchctl: not found" }));
   assert.equal(broken.state, "missing");
   assert.match(broken.detail!, /launchctl could not read gui\/\d+\/sova-gate-stand-in: launchctl: not found/, "unreadable: unsupported");
-  assert.equal((await adoptedStatus(UNIT, exec, () => [], "darwin")).pid, 4242, "darwin reads launchd, never systemctl");
+  const routed = await adoptedStatus(UNIT, exec, () => { throw new Error("launchd never reads cgroup pids"); }, "darwin", readRss, treeOf);
+  assert.deepEqual([routed.pid, routed.rssBytes], [4242, 72_469], "darwin routes both injected tree and memory observations through launchd");
+  assert.deepEqual(memoryReads, [[4242, 4545], [4242, 4545]]);
 });
 
 test("macOS: an adopted agent's logs are the tail of the file launchd writes its stdout to", async () => {

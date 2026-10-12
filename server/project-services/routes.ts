@@ -14,11 +14,18 @@ import { ProjectEngine } from "./engine";
 
 let engine: ProjectEngine | null = null;
 let deployer: Deployer | null = null;
+let engineFactory = () => new ProjectEngine({ driver: new SelectedDriver() });
+
+/** Supply this server's engine before its first use; the default selects the host supervisor. */
+export function configureProjectEngine(factory: () => ProjectEngine): void {
+  if (engine) throw new Error("The project engine is already initialized");
+  engineFactory = factory;
+}
 
 /** The server's one engine (its supervisor adapter chosen at first use, server/project-services/adapters.ts). */
 export function projectEngine(): ProjectEngine {
   if (!engine) {
-    engine = new ProjectEngine({ driver: new SelectedDriver() });
+    engine = engineFactory();
     engine.conformer = conformer(engine);
     const d = (deployer = new Deployer(engine));
     // A deploy that ended may be the digest's to list (§app.project-services/deploy-status).

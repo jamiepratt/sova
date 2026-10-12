@@ -17,9 +17,19 @@ process.env.PI_CODING_AGENT_DIR = agentDir;
 mkdirSync(join(agentDir, "sessions", "live"), { recursive: true });
 symlinkSync(resolve(import.meta.dirname, "..", "..", "pi-config", "extensions"), join(agentDir, "extensions"));
 
+const { ProjectEngine } = await import("../project-services/engine");
+const { FakeHost } = await import("../project-services/fake-host");
+const { configureProjectEngine, projectEngine } = await import("../project-services/routes");
+const serviceHost = new FakeHost();
+let factoryCalls = 0;
+configureProjectEngine(() => {
+  factoryCalls++;
+  return new ProjectEngine(serviceHost.deps());
+});
+assert.equal(factoryCalls, 0, "configuration does not create a supervisor eagerly");
+
 const { registerProjectRoutes } = await import("./routes");
 const { closeAllOrgHosts, hostOf } = await import("../org-engine");
-const { projectEngine } = await import("../project-services/routes");
 const { engineOf, runtimeSid } = await import("./spaces");
 after(() => closeAllOrgHosts());
 
@@ -27,6 +37,12 @@ after(() => closeAllOrgHosts());
 let conformAnswer: { pass: boolean; failed?: { id: string; detail: string } } = { pass: true };
 const conformCalls: unknown[] = [];
 const engine = projectEngine();
+assert.equal(engine.driver, serviceHost.driver, "the configured host is the singleton's driver");
+assert.equal(projectEngine(), engine, "every caller gets the same configured engine");
+assert.equal(factoryCalls, 1, "the factory runs only once");
+assert.ok(engine.conformer && engine.deployer, "the configured engine retains the ordinary verb wiring");
+assert.throws(() => configureProjectEngine(() => { throw new Error("late factory must never run"); }), /already initialized/);
+assert.equal(projectEngine(), engine, "late configuration cannot replace a live engine");
 const realRun = engine.run.bind(engine);
 engine.run = (async (verb: string, body: unknown, caller: never, opts?: never) => {
   if (verb !== "conform") return realRun(verb, body, caller, opts);

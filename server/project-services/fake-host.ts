@@ -178,6 +178,8 @@ export class FakeHost {
     },
   };
   readonly portOwner = (port: number): PortOwner => this.listeners.get(port) ?? "none";
+  /** Deterministic resident bytes per fake pid; no host observation, even for empty units. */
+  readonly rssOf = (pids: number[]): number | null => (pids.length ? pids.length * 1_048_576 : null);
 
   listen(port: number, pid: number, cwd = "/") {
     this.listeners.set(port, { pid, cwd });
@@ -193,6 +195,7 @@ export class FakeHost {
     return {
       driver: this.driver,
       portOwner: this.portOwner,
+      rssOf: this.rssOf,
       readiness: this.readiness,
       clock: this.clock,
       dial: async (port) => this.listeners.has(port),

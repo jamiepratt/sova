@@ -105,7 +105,7 @@ before(async () => {
   git(["commit", "-q", "-m", "fixture"]);
   host.driver.once = runner;
   engine = new ProjectEngine(host.deps());
-  engine.conformer = conformer(engine);
+  engine.conformer = conformer(engine, undefined, host.rssOf);
 });
 
 after(async () => {
