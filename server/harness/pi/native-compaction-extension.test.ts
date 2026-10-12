@@ -48,13 +48,18 @@ async function fixture() {
         }
         return { ...answer(kind === 'portable' ? 'REAL PORTABLE SUMMARY' : ''), responseModel: model.id, stopReason: portableFails && kind === 'portable' ? 'error' : 'stop' };
       })();
-      return {
+      const receiver = {};
+      // A real SDK stream need not permit member replacement. Both public methods retain
+      // their original receiver through the feature's owned view, including failed spend.
+      return Object.freeze({
+        receiver,
         async *[Symbol.asyncIterator]() {
+          assert.equal(this.receiver, receiver, 'iterator keeps its original stream receiver');
           const message = await finish();
           yield { type: 'done', reason: message.stopReason, message };
         },
-        result: finish,
-      };
+        result() { assert.equal(this.receiver, receiver, 'result keeps its original stream receiver'); return finish(); },
+      });
     },
   };
   const ctx: any = { sessionManager: sm, modelRegistry: registry, cwd: '/synthetic/native-unit', get model() { return currentModel; } };

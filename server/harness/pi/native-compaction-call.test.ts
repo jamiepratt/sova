@@ -22,8 +22,15 @@ const payload = () => ({
   reasoning: { effort: 'high' }, text: { verbosity: 'low' }, prompt_cache_key: 'cache_fixture',
   future: { retained: true },
 });
+type NormalizedMessage = Awaited<ReturnType<ReturnType<NativeCompactionCallRegistry['streamSimple']>['result']>>;
+function normalizedMessage(stopReason: NormalizedMessage['stopReason'] = 'stop'): NormalizedMessage {
+  return { role: 'assistant', provider: 'openai-codex', api: 'openai-codex-responses', model: 'offline-model',
+    content: [], timestamp: 1, stopReason,
+    usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, errorMessage: 'provider-secret' };
+}
 function fixture(config: {
-  rawPayload?: unknown; events?: unknown[]; stopReason?: string;
+  rawPayload?: unknown; events?: unknown[]; stopReason?: NormalizedMessage['stopReason'];
   skipPayload?: boolean; throwAfter?: boolean; swallowCallbacks?: boolean;
 } = {}) {
   let observedOptions: NativeCompactionCallOptions | undefined;
@@ -47,7 +54,7 @@ function fixture(config: {
           ]) {
             try { await options?.onProviderStreamEvent?.(event, model); }
             catch (error) { if (!config.swallowCallbacks) throw error; }
-            yield { type: 'text_delta', delta: '' };
+            yield { type: 'text_delta', contentIndex: 0, delta: '', partial: normalizedMessage() };
           }
           if (config.throwAfter) throw new Error('provider-secret ciphertext-secret');
           drained = true;
@@ -55,7 +62,7 @@ function fixture(config: {
         async result() {
           assert.equal(drained, true, 'normalized result must be checked only after drain');
           // A normalized result can carry invented zeros; the call must not return them as native usage.
-          return { stopReason: config.stopReason ?? 'stop', usage: { input: 0, output: 0 }, errorMessage: 'provider-secret' };
+          return normalizedMessage(config.stopReason);
         },
       };
     },
@@ -272,7 +279,7 @@ describe('injectable native compaction call', () => {
       await rejectCall({ registry: f.registry, model, context }, code);
       assert.equal(f.drained, true);
     }
-    for (const stopReason of ['error', 'length', 'toolUse', 'aborted']) {
+    for (const stopReason of ['error', 'length', 'toolUse', 'aborted'] as const) {
       const f = fixture({ stopReason });
       await rejectCall({ registry: f.registry, model, context }, stopReason === 'aborted' ? 'aborted' : 'normalized-failed');
       assert.equal(f.drained, true);
@@ -294,9 +301,9 @@ describe('injectable native compaction call', () => {
           async *[Symbol.asyncIterator]() {
             await options?.onPayload?.(payload(), model);
             abort.abort('provider-secret');
-            yield {};
+            yield { type: 'start', partial: normalizedMessage() };
           },
-          async result() { return { stopReason: 'stop' }; },
+          async result() { return normalizedMessage(); },
         };
       },
     };
@@ -307,8 +314,8 @@ describe('injectable native compaction call', () => {
     const pending: NativeCompactionCallRegistry = {
       streamSimple() {
         return {
-          async *[Symbol.asyncIterator]() { await new Promise(() => {}); yield {}; },
-          async result() { return { stopReason: 'stop' }; },
+          async *[Symbol.asyncIterator]() { await new Promise(() => {}); yield { type: 'start', partial: normalizedMessage() }; },
+          async result() { return normalizedMessage(); },
         };
       },
     };

@@ -202,9 +202,11 @@ export function createNativeCompactionExtension(options: NativeCompactionExtensi
         const route = `sova-compaction-native-${randomUUID()}`;
         const registry = { streamSimple: (...args: Parameters<typeof ctx.modelRegistry.streamSimple>) => {
           const out = ctx.modelRegistry.streamSimple(...args);
-          const result = out.result.bind(out);
-          out.result = async () => { const message = await result(); normalized = message; return message; };
-          return out;
+          // Observe through an owned view, never replace a member on the SDK stream.
+          return {
+            [Symbol.asyncIterator]: () => out[Symbol.asyncIterator](),
+            async result() { const message = await out.result(); normalized = message; return message; },
+          };
         } };
         const prior = latestNativeCompaction(ctx.sessionManager.getBranch());
         const summaries = prefix.filter(message => message.role === 'compactionSummary');

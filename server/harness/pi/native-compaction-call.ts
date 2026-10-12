@@ -14,7 +14,7 @@ export type NativeCompactionCallOptions = NonNullable<StreamArgs[2]>;
 /** Structural injection seam: the actual configured ModelRegistry satisfies it. */
 export interface NativeCompactionCallRegistry {
   streamSimple(model: StreamArgs[0], context: StreamArgs[1], options?: StreamArgs[2]):
-    AsyncIterable<unknown> & { result(): Promise<{ stopReason: string }> };
+    Pick<ReturnType<ModelRegistry['streamSimple']>, typeof Symbol.asyncIterator | 'result'>;
 }
 export interface NativeCompactionCallInput {
   registry: NativeCompactionCallRegistry;
