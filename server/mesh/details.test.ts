@@ -12,7 +12,7 @@ import { after, describe, test } from "node:test";
 import type { HostBrowserAccessResult, HostDetails, HostRenameResult, MeshDetails } from "../../shared/mesh-details";
 import type { MeshFrontDoor } from "../../shared/mesh-local";
 import type { MeshHello } from "../../shared/protocol";
-import { testApp } from "./app-test-fixtures";
+import { fakeMachine, testApp } from "./app-test-fixtures";
 import { inProcessPeerGate } from "./peer-gate-test-fixtures";
 import { fakeWire } from "./peer-wire-test-fixtures";
 
@@ -46,7 +46,8 @@ globalThis.fetch = ((...args: Parameters<typeof fetch>) => {
 }) as typeof fetch;
 
 const wire = fakeWire();
-const app = await testApp();
+const machine = fakeMachine();
+const app = await testApp(machine);
 const { onSyncStatus, peerByNode, stopMesh } = await import("./index");
 const { allows } = await import("./access");
 const { clearProbes, ownProtocol } = await import("./hello");
@@ -173,6 +174,7 @@ describe("mesh off", () => {
     }
     assert.equal(identityCalls, 0);
     assert.equal(fetches(), 0);
+    assert.deepEqual(machine.calls, [], "mesh off reads no machine observations");
   });
 
   test("the front door answers the same with SOVA_BROWSER_ACCESS=off: Browser access is a mesh fact", async () => {
@@ -225,6 +227,10 @@ describe("mesh on", () => {
 
   test("GET /api/mesh/details: this host first, a peer's own answer, a down peer, and an older build", async () => {
     fresh();
+    const [firstStatus, first] = await call<MeshDetails>("GET", "/api/mesh/details");
+    assert.equal(firstStatus, 200);
+    assert.equal(first.hosts[0]!.details!.identity.device, "laptop", "fixed facts wait for the first battery reading");
+    assert.equal(first.hosts[0]!.details!.resources.battery, undefined, "the concurrent nonwaiting read took its snapshot before the lookup landed");
     const [st, d] = await call<MeshDetails>("GET", "/api/mesh/details");
     assert.equal(st, 200);
     const [self, b, c] = d.hosts;
@@ -232,6 +238,14 @@ describe("mesh on", () => {
     assert.equal(self!.state, "self");
     assert.equal(self!.details!.versions.protocol, ownProtocol());
     assert.equal(self!.details!.versions.node, process.version);
+    assert.equal(self!.details!.identity.platform, "darwin");
+    assert.equal(self!.details!.identity.model, "SyntheticMesh1,2");
+    assert.equal(self!.details!.identity.device, "laptop");
+    assert.deepEqual(self!.details!.resources.battery, { percent: 73, charging: true });
+    assert.deepEqual(machine.calls, [
+      { cmd: "pmset", args: ["-g", "batt"], timeoutMs: 2000 },
+      { cmd: "sysctl", args: ["-n", "hw.model"], timeoutMs: 1000 },
+    ], "both existing command readers use the injected machine");
     // Its tailnet name comes from the peer listener's own lookup: details.integration.test.ts.
     assert.equal(typeof self!.details!.resources.cores, "number");
     assert.equal(b!.id, "b");
@@ -270,6 +284,10 @@ describe("mesh on", () => {
     assert.equal(r.status, 200);
     const d = JSON.parse(r.body) as HostDetails;
     assert.equal(d.details, 1);
+    assert.equal(d.identity.model, "SyntheticMesh1,2");
+    assert.equal(d.identity.device, "laptop");
+    assert.deepEqual(d.resources.battery, { percent: 73, charging: true });
+    assert.equal(machine.calls.length, 2, "the peer route shares the fixed facts and battery cache");
     assert.equal(d.id, readPeers().ok && (readPeers() as { config: { self: { id: string } } }).config.self.id);
     assert.doesNotMatch(r.body, new RegExp(tmp.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")), "no path of this host");
   });

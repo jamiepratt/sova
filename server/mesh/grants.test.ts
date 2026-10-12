@@ -10,7 +10,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, test } from "node:test";
 import type { MeshAccessView, MeshInfoView, MeshSessionsView } from "../../shared/mesh-access";
-import { testApp } from "./app-test-fixtures";
+import type { HostDetails } from "../../shared/mesh-details";
+import { fakeMachine, testApp } from "./app-test-fixtures";
 import { inProcessPeerGate } from "./peer-gate-test-fixtures";
 import { fakeWire } from "./peer-wire-test-fixtures";
 
@@ -29,7 +30,8 @@ setIdentity({
 });
 
 const wire = fakeWire();
-const app = await testApp();
+const machine = fakeMachine();
+const app = await testApp(machine);
 const { mayShareWith, NotShared, peerByNode, peerFetch, stopMesh } = await import("./index");
 const { accessFile, allows, classifyRequest, classifyUpgrade, clearDenied } = await import("./access");
 const { clearProbes, ownProtocol } = await import("./hello");
@@ -154,7 +156,20 @@ describe("grants on the peer gate", () => {
     assert.equal((await grant("b", { preset: "presence" }))[0], 200);
     whoisNode = "nB";
     assert.equal((await peerCall("GET", "/api/peer/hello")).status, 200);
-    assert.equal((await peerCall("GET", "/api/peer/details")).status, 200);
+    assert.deepEqual(machine.calls, [], "hello never reads machine details");
+    const details = await peerCall("GET", "/api/peer/details");
+    assert.equal(details.status, 200);
+    const own = JSON.parse(details.body) as HostDetails;
+    assert.equal(own.identity.model, "SyntheticMesh1,2");
+    assert.equal(own.identity.device, "laptop", "fixed facts wait for the battery even on the first answer");
+    assert.equal(own.resources.battery, undefined, "the first nonwaiting read snapshots the pending lookup");
+    const cached = await peerCall("GET", "/api/peer/details");
+    assert.equal(cached.status, 200);
+    assert.deepEqual((JSON.parse(cached.body) as HostDetails).resources.battery, { percent: 73, charging: true }, "the next answer serves the completed observation");
+    assert.deepEqual(machine.calls, [
+      { cmd: "pmset", args: ["-g", "batt"], timeoutMs: 2000 },
+      { cmd: "sysctl", args: ["-n", "hw.model"], timeoutMs: 1000 },
+    ], "presence grants serve the observed details, not just a status code");
     for (const [m, p] of [
       ["GET", "/api/sessions"],
       ["GET", "/api/peer/sync/manifest"],
@@ -209,18 +224,24 @@ describe("grants on the peer gate", () => {
 
   test("a broken mesh-access.json fails closed: hello only, for every peer, and the page says so", async () => {
     writeFileSync(accessFile(), "{broken");
+    machine.time += 60_000; // expire the battery cache: reaching the route would now read it again
+    const observations = [...machine.calls];
     for (const node of ["nB", "nF"]) {
       whoisNode = node;
       assert.equal((await peerCall("GET", "/api/peer/hello")).status, 200, node);
       assert.equal((await peerCall("GET", "/api/peer/details")).marker, "denied", node);
       assert.equal((await peerCall("GET", "/api/sessions")).marker, "denied", node);
     }
+    assert.deepEqual(machine.calls, observations, "denied details do not collect machine observations");
     const [, view] = await getJson<MeshAccessView>("/api/mesh/access");
     assert.ok(view.error && /not JSON/.test(view.error));
     // It is never overwritten from the page.
     assert.equal((await grant("b", { preset: "full" }))[0], 409);
     assert.equal(readFileSync(accessFile(), "utf8"), "{broken");
     rmSync(accessFile());
+    assert.equal((await peerCall("GET", "/api/peer/details")).status, 200);
+    assert.equal(machine.calls.length, observations.length + 1, "restoring the grant reaches the expired battery reader");
+    assert.deepEqual(machine.calls.at(-1), { cmd: "pmset", args: ["-g", "batt"], timeoutMs: 2000 });
   });
 
   test("/api/mesh/access: this host's own browser only; a peer or a relayed browser never reaches it", async () => {

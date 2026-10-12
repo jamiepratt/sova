@@ -96,6 +96,7 @@ import { parseSandboxBody } from "./sandbox-state";
 import { WORKER_ID_RE } from "./worker-resume";
 import { meshApi, meshRoutes } from "./mesh";
 import { mountDetails } from "./mesh/details";
+import type { Machine } from "./mesh/details-collect";
 import { mountResync } from "./mesh/resync";
 import { probePeer } from "./mesh/hello";
 import { LINK_LIVE, meshLinks } from "./mesh/links";
@@ -154,6 +155,8 @@ export interface AppDeps {
   /** A session's raw custom entries (its held runtime's branch, else its file's): the links
       sandbox reads its `sandbox` and `worktrees` entries from them (server/link-sandbox.ts). */
   extensionEntriesOf(path: string): Promise<readonly unknown[]>;
+  /** Host observations for mesh details; absent uses the real machine. */
+  machine?: Machine;
 }
 
 let built = false;
@@ -1511,7 +1514,7 @@ export function buildApp(deps: AppDeps) {
       if (!entries) return null;
       return { count: entries.filter((e) => e.state === "live" || e.state === "expired").length, conflicts: entries.filter((e) => e.conflictWith?.length).length };
     },
-  });
+  }, deps.machine);
   // Linked sessions across hosts (server/mesh/links-routes.ts): /api/peer/links*, the local acts
   // under /api/mesh/links*, the page reads under /api/links/*; OFF, 404 and nothing runs.
   const sessionById = async (id: string) => {
