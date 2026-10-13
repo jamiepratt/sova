@@ -8,5 +8,5 @@
   "singleton": true,
   "limits": { "targetsPerRun": 10, "perDay": 80 },
   "playbook": "merge-round",
-  "overseerMayStart": false
+  "overseerMayStart": true
 }

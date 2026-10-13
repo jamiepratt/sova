@@ -1,0 +1,13 @@
+{
+  "id": "resolve-github-issues",
+  "label": "Resolve GitHub issues",
+  "icon": "wrench",
+  "description": "Coordinates reviewed issue fixes and verifies landing before closure.",
+  "remove": [],
+  "grant": ["sessions.read", "sessions.message"],
+  "singleton": true,
+  "limits": { "targetsPerRun": 5, "perDay": 40 },
+  "minorModes": ["spec"],
+  "firstMessage": "Find the absolute current checkout root from the session cwd (for git, git rev-parse --show-toplevel), then read <root>/.sova/playbooks/resolve-github-issues/PLAYBOOK.md and follow it, resolving its references against that absolute bundle directory. This is a bootstrap reading instruction, not the playbook's JSON arguments. Invocation JSON: {}. Start with read-only intake; confirm publication, landing, and closure authority before mutations.",
+  "overseerMayStart": true
+}
