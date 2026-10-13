@@ -4,6 +4,7 @@ dist-share/
 *.log
 .playwright-port
 .agent/
+.bun/
 
 # credential material never belongs in the repo
 .env
