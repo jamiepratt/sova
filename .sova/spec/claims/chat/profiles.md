@@ -315,7 +315,10 @@ Enforced in the tool, never by the prompt; each has a default and is editable pe
   missing folder lists none. **Yours**:
   `<state root>/session-profiles.json` `{version: 1, profiles: [...]}`. **This project**:
   `<project root>/.sova/profiles/<id>.json`, one profile per file, whose `id` must equal the file's
-  name.
+  name. Sova's repository includes Merge captain and Resolve GitHub issues as project profiles,
+  both permitting Overseer starts subject to approval (§chat.profiles/trust). Resolve GitHub
+  issues uses a first-message reading instruction, not an automatic playbook launch
+  (§chat/resolve-github-issues).
 - **Every file is parsed strictly** (§chat.profiles/model's fields). A file that doesn't parse, or
   whose id doesn't match its name, is skipped and listed as a problem, with its path and the exact
   error; one bad file never hides the others. A malformed Yours file lists none of yours, with its

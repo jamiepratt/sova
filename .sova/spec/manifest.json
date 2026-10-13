@@ -1748,6 +1748,27 @@
         "src/components/SessionView.tsx"
       ]
     },
+    "§chat/resolve-github-issues": {
+      "kind": "behavior",
+      "authority": "accepted",
+      "evidence": "reviewed",
+      "requires": [
+        "§chat.playbooks/bundles",
+        "§chat.profiles/projects",
+        "§chat.profiles/trust",
+        "§chat.profiles/enforcement",
+        "§chat.profiles/applying",
+        "§chat.merge-round/driver"
+      ],
+      "code": [
+        ".sova/playbooks/resolve-github-issues/PLAYBOOK.md",
+        ".sova/playbooks/resolve-github-issues/references/workflow.md",
+        ".sova/playbooks/resolve-github-issues/references/contract.md",
+        ".sova/playbooks/resolve-github-issues/scripts/plan.mjs",
+        ".sova/profiles/resolve-github-issues.json",
+        "scripts/resolve-github-issues.test.ts"
+      ]
+    },
     "§chat/slash-commands": {
       "kind": "surface",
       "authority": "accepted",
@@ -10834,7 +10855,7 @@
     "§chat.profiles/projects": {
       "kind": "behavior",
       "authority": "accepted",
-      "evidence": "verified",
+      "evidence": "reviewed",
       "code": [
         "server/project-root.ts",
         "server/profile-sources.ts",
@@ -10850,8 +10871,8 @@
         "§chat.profiles/model"
       ],
       "agreed": {
-        "by": "naomarik",
-        "at": "2026-10-11T08:41Z"
+        "by": "user",
+        "at": "2026-10-13T09:10Z"
       }
     },
     "§chat.profiles/trust": {
