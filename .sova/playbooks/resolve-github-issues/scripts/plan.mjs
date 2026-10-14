@@ -64,8 +64,20 @@ export function parseRequest(value = {}) {
   };
 }
 
+const progressOf = (v) => {
+  keys(v, ["status", "commentId", "owner"], "progress");
+  if (!["ready", "active", "blocked", "deferred", "review", "landed", "completed", "unknown"].includes(v.status)) fail("invalid progress status");
+  const commentId = v.commentId === null ? null : integer(v.commentId, "progress commentId");
+  if (commentId === null && !["ready", "unknown"].includes(v.status)) fail("progress commentId required for recorded status");
+  const owner = v.owner === null ? null : text(v.owner, "progress owner");
+  if (v.status === "ready" && owner !== null) fail("ready progress owner must be null");
+  if (v.status === "active" && owner === null) fail("active progress owner required");
+  return { status: v.status, commentId, owner };
+};
+
 /** Input is the agent's normalized, fully paginated snapshot (contract.md), not raw CLI output.
- * `complete` is a declaration, not proof: the agent must reconcile its page ledger. */
+ * `complete` and normalized fields are declarations, not proof of GitHub authority.
+ * The agent must reconcile full history; ready/null means no record after that read. */
 export function plan(snapshot, input = {}) {
   const request = parseRequest(input);
   if (request.resume) fail("resume requires a validated saved run; pure plan cannot resume");
@@ -84,7 +96,7 @@ export function plan(snapshot, input = {}) {
   if (!Array.isArray(snapshot.issues) || snapshot.issues.length > 10_000) fail("issues must be a complete list of at most 10000 rows");
   const rows = new Map();
   for (const raw of snapshot.issues) {
-    keys(raw, ["number", "state", "labels", "assignees", "author", "milestone", "children", "dependencies", "externalPrerequisites", "verified", "verifiedAt"], "issue");
+    keys(raw, ["number", "state", "labels", "assignees", "author", "milestone", "children", "dependencies", "externalPrerequisites", "verified", "verifiedAt", "progress"], "issue");
     const number = integer(raw.number, "issue number");
     if (!["open", "closed"].includes(raw.state)) fail(`invalid state: ${number}`);
     if (typeof raw.verified !== "boolean") fail(`verified must be explicit: ${number}`);
@@ -97,7 +109,7 @@ export function plan(snapshot, input = {}) {
       if (other === repo) fail("same-repo prerequisite must be a numeric graph edge");
       return `${other}#${n}`;
     });
-    const row = { number, state: raw.state, labels: strings(raw.labels, "labels"), assignees: strings(raw.assignees, "assignees"), author: text(raw.author, "author"), milestone: raw.milestone === null ? null : text(raw.milestone, "milestone"), children: numbers(raw.children, "children"), dependencies: numbers(raw.dependencies, "dependencies"), externalPrerequisites: [...new Set(externalPrerequisites)].sort(), verified: raw.verified, verifiedAt: raw.verifiedAt };
+    const row = { number, state: raw.state, labels: strings(raw.labels, "labels"), assignees: strings(raw.assignees, "assignees"), author: text(raw.author, "author"), milestone: raw.milestone === null ? null : text(raw.milestone, "milestone"), children: numbers(raw.children, "children"), dependencies: numbers(raw.dependencies, "dependencies"), externalPrerequisites: [...new Set(externalPrerequisites)].sort(), verified: raw.verified, verifiedAt: raw.verifiedAt, progress: progressOf(raw.progress) };
     if (rows.has(number) && JSON.stringify(rows.get(number)) !== JSON.stringify(row)) fail(`conflicting inventory rows: ${number}`);
     rows.set(number, row);
   }
@@ -128,13 +140,15 @@ export function plan(snapshot, input = {}) {
   if (request.issues && context.length) fail("explicit issues must be open; closed targets need a separate verification request");
   if (request.parent !== undefined && rows.get(request.parent).state !== "open") fail("parent must be open");
   const open = new Set([...selected].filter((n) => rows.get(n).state === "open"));
+  const ready = (n) => rows.get(n).progress.status === "ready";
+  const held = [...open].sort((a, b) => a - b).filter((n) => !ready(n)).map((issue) => ({ issue, ...rows.get(issue).progress }));
   const blockers = new Map();
-  for (const n of order.filter((n) => open.has(n))) {
-    const bad = [...edges(n).filter((d) => !rows.get(d).verified && (rows.get(d).state === "closed" || !open.has(d) || blockers.has(d))), ...rows.get(n).externalPrerequisites];
+  for (const n of order.filter((n) => open.has(n) && ready(n))) {
+    const bad = [...edges(n).filter((d) => !rows.get(d).verified && (rows.get(d).state === "closed" || !ready(d) || !open.has(d) || blockers.has(d))), ...rows.get(n).externalPrerequisites];
     if (bad.length) blockers.set(n, bad);
   }
-  const eligible = order.filter((n) => open.has(n) && !blockers.has(n));
+  const eligible = order.filter((n) => open.has(n) && ready(n) && !blockers.has(n));
   const batches = [];
   for (let i = 0; i < eligible.length && batches.length < request.maxBatches; i += request.batchSize) batches.push(eligible.slice(i, i + request.batchSize));
-  return { repo, defaultBranch, base, landing, landingSha: snapshot.landingSha, landingMode: request.landingMode, selected: [...open].sort((a, b) => a - b), context, batches, deferred: eligible.slice(request.batchSize * request.maxBatches), blockers: [...blockers].map(([issue, prerequisites]) => ({ issue, prerequisites })) };
+  return { repo, defaultBranch, base, landing, landingSha: snapshot.landingSha, landingMode: request.landingMode, selected: [...open].sort((a, b) => a - b), context, held, batches, deferred: eligible.slice(request.batchSize * request.maxBatches), blockers: [...blockers].map(([issue, prerequisites]) => ({ issue, prerequisites })) };
 }

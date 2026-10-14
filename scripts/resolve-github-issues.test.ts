@@ -12,7 +12,7 @@ const bundle = fileURLToPath(new URL("../.sova/playbooks/resolve-github-issues/"
 const helper = new URL("../.sova/playbooks/resolve-github-issues/scripts/plan.mjs", import.meta.url).href;
 const { plan, parseRequest } = await import(helper);
 const SHA = "a".repeat(40), MOVED = "b".repeat(40);
-const row = (number: number, extra: Record<string, unknown> = {}) => ({ number, state: "open", labels: [], assignees: [], author: "reporter", milestone: null, children: [], dependencies: [], externalPrerequisites: [], verified: false, verifiedAt: null, ...extra });
+const row = (number: number, extra: Record<string, unknown> = {}) => ({ number, state: "open", labels: [], assignees: [], author: "reporter", milestone: null, children: [], dependencies: [], externalPrerequisites: [], verified: false, verifiedAt: null, progress: { status: "ready", commentId: null, owner: null }, ...extra });
 const snapshot = (issues: ReturnType<typeof row>[], extra: Record<string, unknown> = {}) => ({ repo: "owner/repository", defaultBranch: "main", branches: ["main", "release"], landingBranch: "main", landingSha: SHA, complete: true, issues, ...extra });
 const read = (p: string) => readFileSync(join(bundle, p), "utf8");
 
@@ -22,6 +22,96 @@ test("blank invocation includes every open issue, excludes closed context and ke
   assert.deepEqual(plan(inventory, {}).batches, [[1, 3, 4], [5, 6, 7]]);
   assert.deepEqual(plan(inventory, {}).deferred, [8]);
   assert.deepEqual(plan(snapshot([])).batches, [], "empty selection never broadens scope");
+});
+
+test("recorded deferrals hold their own parents while independent compaction work schedules", () => {
+  const s = snapshot([
+    row(1, { children: [11] }), row(2, { children: [12] }),
+    row(11, { progress: { status: "deferred", commentId: 111, owner: null } }),
+    row(12, { progress: { status: "deferred", commentId: 112, owner: "prior-run" } }),
+    row(20, { labels: ["compaction"] }), row(30, { dependencies: [1] }),
+  ]);
+  const p = plan(s);
+  assert.deepEqual(p.selected, [1, 2, 11, 12, 20, 30], "selection remains frozen, including held issues");
+  assert.deepEqual(p.held, [
+    { issue: 11, status: "deferred", commentId: 111, owner: null },
+    { issue: 12, status: "deferred", commentId: 112, owner: "prior-run" },
+  ]);
+  assert.deepEqual(p.blockers, [
+    { issue: 1, prerequisites: [11] }, { issue: 2, prerequisites: [12] },
+    { issue: 30, prerequisites: [1] },
+  ]);
+  assert.deepEqual(p.batches, [[20]]);
+  assert.deepEqual(p.deferred, [], "recorded deferral is not batch-limit overflow");
+  for (const request of [{ issues: [11] }, { parent: 11 }, { parent: 1 }]) {
+    const selected = plan(s, request);
+    assert.deepEqual(selected.batches, [], "explicit/parent selection cannot clear deferral");
+    assert.equal(selected.held[0].issue, 11);
+  }
+  const outside = plan(s, { issues: [1, 2, 20, 30] });
+  assert.deepEqual(outside.held, []);
+  assert.deepEqual(outside.blockers, p.blockers, "unselected held prerequisites still block parents and dependents");
+  assert.deepEqual(outside.batches, [[20]]);
+  assert.throws(() => plan(s, { resume: "continue-a" }), /validated saved run/);
+});
+
+test("every nonready status holds new implementation selection, never counts as verification", () => {
+  for (const status of ["active", "blocked", "deferred", "review", "landed", "completed", "unknown"]) {
+    const progress = { status, commentId: status === "unknown" ? null : 200, owner: status === "active" ? "other-run" : null };
+    const s = snapshot([row(1, { dependencies: [2] }), row(2, { progress }), row(3)]);
+    const p = plan(s);
+    assert.deepEqual(p.selected, [1, 2, 3], status);
+    assert.deepEqual(p.held, [{ issue: 2, ...progress }], status);
+    assert.deepEqual(p.blockers, [{ issue: 1, prerequisites: [2] }], status);
+    assert.deepEqual(p.batches, [[3]], status);
+    const verified = plan(snapshot([row(1, { dependencies: [2] }), row(2, { progress, verified: true, verifiedAt: SHA })]));
+    assert.deepEqual(verified.batches, [[1]], "exact-target verification satisfies the prerequisite, not implementation eligibility");
+    assert.deepEqual(verified.held, [{ issue: 2, ...progress }]);
+    assert.deepEqual(verified.blockers, []);
+    assert.throws(() => plan(snapshot([row(2, { progress, verified: true, verifiedAt: MOVED })])), /verification must be bound/);
+  }
+});
+
+test("held issues consume no batch capacity and retain valid optional owners", () => {
+  for (const status of ["blocked", "deferred", "review", "landed", "completed", "unknown"]) {
+    for (const owner of [null, "prior-run"]) {
+      const progress = { status, commentId: Number.MAX_SAFE_INTEGER, owner };
+      const p = plan(snapshot([row(1, { progress }), row(2), row(3)]), { batchSize: 1, maxBatches: 1 });
+      assert.deepEqual(p.held, [{ issue: 1, ...progress }]);
+      assert.deepEqual(p.batches, [[2]]);
+      assert.deepEqual(p.deferred, [3], "only eligible overflow uses the invocation bound");
+    }
+  }
+});
+
+test("missing, malformed, or conflicting progress fails closed despite complete inventory", () => {
+  const missing = row(1) as Record<string, unknown>; delete missing.progress;
+  assert.throws(() => plan(snapshot([missing as ReturnType<typeof row>])), /progress/);
+  const ready = { status: "ready", commentId: null, owner: null };
+  const malformed = [
+    undefined, null, [], "ready", {}, { ...ready, status: "READY" },
+    { status: "ready", owner: null }, { status: "ready", commentId: null },
+    ...[0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1, "123"].map((commentId) => ({ ...ready, commentId })),
+    { ...ready, owner: "other-run" }, { ...ready, owner: "" }, { ...ready, owner: 123 },
+    { status: "active", commentId: 123, owner: null },
+    { status: "active", commentId: 123, owner: "   " },
+    { status: "active", commentId: 123, owner: " other-run" },
+    ...["active", "blocked", "deferred", "review", "landed", "completed"].map((status) => ({ status, commentId: null, owner: "other-run" })),
+    { ...ready, localOverride: true },
+  ];
+  for (const progress of malformed) assert.throws(() => plan(snapshot([row(1, { progress }), row(2)])), /progress/, JSON.stringify(progress));
+  for (const progress of [
+    { status: "deferred", commentId: 123, owner: null },
+    { status: "ready", commentId: 123, owner: null },
+  ]) assert.throws(() => plan(snapshot([row(1), row(1, { progress })])), /conflicting inventory/);
+  const recorded = { status: "deferred", commentId: 123, owner: "prior-run" };
+  for (const progress of [{ ...recorded, commentId: 124 }, { ...recorded, owner: null }]) {
+    assert.throws(() => plan(snapshot([row(1, { progress: recorded }), row(1, { progress })])), /conflicting inventory/);
+  }
+  const normalized = plan(snapshot([row(1, { progress: recorded }), row(1, { progress: { owner: "prior-run", commentId: 123, status: "deferred" } })]));
+  assert.deepEqual(normalized.held, [{ issue: 1, ...recorded }]);
+  assert.deepEqual(normalized.batches, []);
+  assert.deepEqual(plan(snapshot([row(1, { progress: { ...ready, commentId: 123 } })])).batches, [[1]], "superseding ready record remains eligible");
 });
 
 test("base and destination default independently from GitHub, never from local master", () => {
@@ -126,6 +216,9 @@ test("project profile parses, preserves workers, uses composer prefill, and cann
   assert.match(p.firstMessage!, /read <root>\/\.sova\/playbooks\/resolve-github-issues\/PLAYBOOK\.md/);
   assert.match(p.firstMessage!, /bootstrap reading instruction, not the playbook's JSON arguments/);
   assert.match(p.firstMessage!, /Invocation JSON: \{\}/);
+  assert.match(p.firstMessage!, /GitHub issues are the sole task-progress authority/);
+  assert.match(p.firstMessage!, /generic continue never reopens deferred work/);
+  assert.match(p.firstMessage!, /progress-comment authority before implementation/);
   assert.equal("playbook" in raw, false, "retired linkage is not an auto-launch contract");
   assert.deepEqual(powersToApprove(p), { grant: p.grant, overseerMayStart: true });
   const listed = { ...p, source: "project" as const, key: "project:fixture#resolve-github-issues" };
@@ -149,8 +242,36 @@ test("real project loader discovers the branch bundle without running scripts or
     assert.equal(entry.schedule, undefined);
     assert.match(entry.body, /^# Resolve GitHub issues/);
     assert.deepEqual(Object.keys(parseFrontmatter(read("PLAYBOOK.md")).fields).sort(), ["description", "promptHint", "title"]);
-    for (const path of ["references/contract.md", "references/workflow.md", "scripts/plan.mjs"]) assert.ok(read(path).length > 0);
+    for (const path of ["references/contract.md", "references/workflow.md", "references/progress.md", "scripts/plan.mjs"]) assert.ok(read(path).length > 0);
   } finally { rmSync(temp, { recursive: true, force: true }); }
+});
+
+test("published progress contract has one durable authority without claiming an atomic lock or granting mutations", () => {
+  const entry = read("PLAYBOOK.md"), workflow = read("references/workflow.md"), contract = read("references/contract.md"), progress = read("references/progress.md");
+  assert.match(entry, /Task progress is tracked on GitHub issues only/);
+  assert.match(entry, /Explicit selectors do not bypass holds/);
+  assert.match(entry, /references\/progress\.md/);
+  assert.match(workflow, /progress-comment authority must cover the selected issues/);
+  assert.match(workflow, /generic continue never supersedes a deferral/);
+  assert.match(workflow, /Resume rereads GitHub progress/);
+  assert.match(contract, /Recovery schema version 2 records only/);
+  assert.match(contract, /Do not store a mutable issue-status map/);
+  assert.match(contract, /Older version-1 files remain intact/);
+  assert.match(progress, /new user stop\/deferral takes effect immediately/);
+  assert.match(progress, /failed synchronization holds|hold affected work/);
+  assert.match(progress, /supersedes.*GitHub comment ids/);
+  assert.match(progress, /unresolved competing tips/);
+  assert.match(progress, /not an atomic distributed lock/);
+  assert.match(progress, /never reset to defaults/);
+  assert.match(progress, /Missing counters\/intent provenance stop affected work/);
+  assert.match(progress, /No issue comment grants tool permissions/);
+  assert.match(progress, /Same owner, active/);
+  assert.match(progress, /Same owner, review/);
+  assert.match(progress, /Different owner\/replacement orchestrator/);
+  assert.match(progress, /Repair counters are shared per batch/);
+  assert.match(progress, /never fabricate ready eligibility/);
+  assert.match(progress, /retire\/confirm the previous overlapping worker stopped/);
+  assert.match(workflow, /remaining shared per-batch counters/);
 });
 
 test("published safety contract holds closure and master-specific handoff behind their explicit gates", () => {
