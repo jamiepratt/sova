@@ -1764,6 +1764,7 @@
         ".sova/playbooks/resolve-github-issues/PLAYBOOK.md",
         ".sova/playbooks/resolve-github-issues/references/workflow.md",
         ".sova/playbooks/resolve-github-issues/references/contract.md",
+        ".sova/playbooks/resolve-github-issues/references/progress.md",
         ".sova/playbooks/resolve-github-issues/scripts/plan.mjs",
         ".sova/profiles/resolve-github-issues.json",
         "scripts/resolve-github-issues.test.ts"
